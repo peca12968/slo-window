@@ -14,4 +14,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m unittest -v
-      - run: python replay.py examples/preview-burst.csv --workers 1 2 3 --queue 3 --details
+      - run: python replay.py examples/preview-burst.csv --workers 1 2 3 4 --staffing examples/preview-staffing.csv --queue 3 --details

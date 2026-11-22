@@ -7,19 +7,22 @@ import sys
 import tempfile
 import unittest
 
-from replay import Request, replay
+from replay import Request, Staffing, replay, replay_staffing
 
 
 ROOT = Path(__file__).resolve().parent
 
 
-def tick_reference(trace, workers, queue_limit):
+def tick_reference(trace, workers, queue_limit, changes=()):
     """Tiny traces only. Check every worker and every waiting request once per millisecond."""
     waiting, active, result = [], {}, {}
-    peak = busy = 0
+    peak = busy = target_time = drain_time = 0
     now = min(r.arrival_ms for r in trace) if trace else 0
     first = now
     while len(result) < len(trace):
+        for change in changes:
+            if change.at_ms <= now:
+                workers = change.workers
         for name in list(active):
             req, start = active[name]
             if now == start + req.service_ms:
@@ -30,7 +33,7 @@ def tick_reference(trace, workers, queue_limit):
                 result[req.id] = ("timed_out", None, now, now - req.arrival_ms)
                 waiting.remove(req)
         for req in waiting[:]:
-            if len(active) == workers:
+            if len(active) >= workers:
                 break
             waiting.remove(req)
             active[req.id] = (req, now)
@@ -47,8 +50,11 @@ def tick_reference(trace, workers, queue_limit):
                 waiting.append(req)
         peak = max(peak, len(waiting))
         busy += len(active)
+        if len(result) < len(trace):
+            target_time += workers
+            drain_time += max(0, len(active) - workers)
         now += 1
-    return result, busy, peak, now - 1 - first if trace else 0
+    return result, busy, peak, now - 1 - first if trace else 0, target_time, drain_time
 
 
 def cli(*args, timeout=10):
@@ -63,7 +69,7 @@ class CapacityTests(unittest.TestCase):
                 trace = [Request(str(j), rng.randrange(13), rng.randint(1, 8), rng.randrange(9))
                          for j in range(rng.randrange(20))]
                 workers, slots = rng.randint(1, 4), rng.randrange(5)
-                expect, busy, peak, window = tick_reference(trace, workers, slots)
+                expect, busy, peak, window, target_time, drain_time = tick_reference(trace, workers, slots)
                 report = replay(trace, workers, slots)
                 rows = report["outcomes"]
                 self.assertEqual([r["id"] for r in rows], [r.id for r in sorted(trace, key=lambda r: r.arrival_ms)])
@@ -71,6 +77,7 @@ class CapacityTests(unittest.TestCase):
                                   for r in rows}, expect)
                 self.assertEqual((report["busy_worker_ms"], report["peak_queue"], report["window_ms"]),
                                  (busy, peak, window))
+                self.assertEqual((report["target_worker_ms"], report["draining_worker_ms"]), (target_time, drain_time))
                 for status in ("served", "timed_out", "queue_full"):
                     self.assertEqual(report[status], sum(r[0] == status for r in expect.values()))
                 waits = sorted(r[-1] for r in expect.values() if r[0] == "served")
@@ -83,6 +90,61 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual([(r["id"], r["status"], r["end_ms"]) for r in report["outcomes"]],
                          [("active", "served", 5), ("expires", "timed_out", 5),
                           ("waiting", "served", 6), ("arrival", "timed_out", 5)])
+
+    def test_variable_capacity_matches_tick_oracle(self):
+        rng = random.Random(9216)
+        for case in range(400):
+            with self.subTest(case=case):
+                changes = [Staffing(t, rng.randrange(5)) for t in
+                           [0, *sorted(rng.sample(range(1, 36), rng.randrange(7)))]]
+                trace = [Request(str(j), rng.randrange(1, 24), rng.randint(1, 12), rng.randrange(9))
+                         for j in range(rng.randrange(20))]
+                slots = rng.randrange(5)
+                result = replay_staffing(trace, changes, slots)
+                expected, busy, peak, window, target, drain = tick_reference(trace, 0, slots, changes)
+                self.assertEqual({r["id"]: (r["status"], r["start_ms"], r["end_ms"], r["wait_ms"])
+                                  for r in result["outcomes"]}, expected)
+                self.assertEqual((result["busy_worker_ms"], result["peak_queue"], result["window_ms"],
+                                  result["target_worker_ms"], result["draining_worker_ms"]),
+                                 (busy, peak, window, target, drain))
+                self.assertEqual(result["allocated_worker_ms"], target + drain)
+
+    def test_simultaneous_expiry_completion_restaffing_and_arrival(self):
+        trace = [Request("first", 0, 5, 1), Request("expires", 1, 2, 4), Request("waits", 1, 3, 10),
+                 Request("new", 5, 1, 2), Request("instant", 5, 1, 0)]
+        changes = [Staffing(0, 1), Staffing(5, 0), Staffing(7, 1), Staffing(8, 0)]
+        result = replay_staffing(trace, changes, 2)
+        self.assertEqual([(r["id"], r["status"], r["start_ms"], r["end_ms"]) for r in result["outcomes"]],
+                         [("first", "served", 0, 5), ("expires", "timed_out", None, 5),
+                          ("waits", "served", 7, 10), ("new", "timed_out", None, 7),
+                          ("instant", "timed_out", None, 5)])
+        self.assertEqual((result["target_worker_ms"], result["draining_worker_ms"]), (6, 2))
+
+    def test_staffing_cli_compares_fixed_and_surge(self):
+        proc = cli(ROOT / "examples/preview-burst.csv", "--workers", "4",
+                   "--staffing", ROOT / "examples/preview-staffing.csv", "--queue", "3")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        fixed, surge = json.loads(proc.stdout)
+        self.assertEqual([(r["served"], r["target_worker_ms"], r["draining_worker_ms"],
+                           r["p95_served_wait_ms"]) for r in (fixed, surge)], [(12, 124, 0, 5), (12, 80, 2, 6)])
+        self.assertEqual(surge["staffing"], [{"at_ms": 0, "workers": 2}, {"at_ms": 3, "workers": 4},
+                                            {"at_ms": 12, "workers": 2}])
+        self.assertNotIn("outcomes", surge)
+        self.assertEqual((fixed["allocated_worker_ms"], surge["allocated_worker_ms"]), (124, 82))
+
+    def test_staffing_validation_and_sparse_window(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "staff.csv"
+            for body in ("", "1,3", "0,2\n0,1", "0,2\n5,2\n4,1", "0,-1", "0,", "0,3,4"):
+                path.write_text("at_ms,workers\n" + body)
+                proc = cli(ROOT / "examples/preview-burst.csv", "--staffing", path, "--queue", "1")
+                self.assertEqual(proc.returncode, 2, body)
+                self.assertFalse(proc.stdout)
+        late = 10**12
+        staffing = [Staffing(0, 3), Staffing(5, 0), Staffing(late, 1), Staffing(late + 1, 0)]
+        sparse = replay_staffing([Request("late", late-1, 3, 4)], staffing, 1)
+        self.assertEqual((sparse["window_ms"], sparse["target_worker_ms"], sparse["draining_worker_ms"]),
+                         (4, 1, 2))
 
     def test_cli_compares_fixture_and_skips_large_time_gaps(self):
         proc = cli(ROOT / "examples/preview-burst.csv", "--workers", "1", "2", "3", "--queue", "3")
