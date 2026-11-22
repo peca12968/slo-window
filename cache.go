@@ -30,9 +30,12 @@ type Result[V any] struct {
 type Config struct {
 	FreshFor     time.Duration
 	StaleIfError time.Duration
-	LoadTimeout  time.Duration
-	MaxEntries   int
-	MaxInFlight  int
+	// RetryAfterError delays the next refresh after a failed load served stale data.
+	// The delay ends at the original stale deadline at the latest. Zero retries immediately.
+	RetryAfterError time.Duration
+	LoadTimeout     time.Duration
+	MaxEntries      int
+	MaxInFlight     int
 	// Now controls entry age. LoadTimeout always uses a real context deadline.
 	Now func() time.Time
 }
@@ -43,6 +46,7 @@ type entry[V any] struct {
 	key        string
 	value      V
 	freshUntil time.Time
+	retryAt    time.Time // Initially freshUntil, then bounded by the stale deadline.
 }
 
 type flight[V any] struct {
@@ -75,7 +79,7 @@ func New[V any](cfg Config, load Loader[V]) (*Cache[V], error) {
 // NewWithQueue additionally admits up to maxQueued distinct waiting keys.
 // LoadTimeout starts when dispatched. Get's context also covers time in the queue.
 func NewWithQueue[V any](cfg Config, maxQueued int, load Loader[V]) (*Cache[V], error) {
-	if cfg.FreshFor <= 0 || cfg.StaleIfError < 0 || cfg.LoadTimeout <= 0 ||
+	if cfg.FreshFor <= 0 || cfg.StaleIfError < 0 || cfg.RetryAfterError < 0 || cfg.LoadTimeout <= 0 ||
 		cfg.MaxEntries < 1 || cfg.MaxInFlight < 1 || maxQueued < 0 || load == nil {
 		return nil, errors.New("cache: invalid durations, capacity, or loader")
 	}
@@ -94,11 +98,18 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 	c.mu.Lock()
 	if item := c.items[key]; item != nil {
 		stored := item.Value.(entry[V])
-		if c.config.Now().Before(stored.freshUntil) {
+		now := c.config.Now()
+		if now.Before(stored.freshUntil) {
 			c.totals.Hits++
 			c.order.MoveToFront(item)
 			c.mu.Unlock()
 			return Result[V]{Value: stored.value, Source: Hit}, nil
+		}
+		if now.Before(stored.retryAt) {
+			c.totals.CooldownReads++
+			c.order.MoveToFront(item)
+			c.mu.Unlock()
+			return Result[V]{Value: stored.value, Source: Stale}, nil
 		}
 	}
 	f := c.flights[key]
@@ -206,7 +217,8 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 	now := c.config.Now()
 	item := c.items[key]
 	if err == nil {
-		updated := entry[V]{key: key, value: value, freshUntil: now.Add(c.config.FreshFor)}
+		freshUntil := now.Add(c.config.FreshFor)
+		updated := entry[V]{key: key, value: value, freshUntil: freshUntil, retryAt: freshUntil}
 		if item != nil {
 			item.Value = updated
 			c.order.MoveToFront(item)
@@ -223,7 +235,15 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 		f.err = err
 		if item != nil {
 			stored := item.Value.(entry[V])
-			if now.Before(stored.freshUntil.Add(c.config.StaleIfError)) {
+			staleUntil := stored.freshUntil.Add(c.config.StaleIfError)
+			if now.Before(staleUntil) {
+				if delay := c.config.RetryAfterError; delay > 0 {
+					stored.retryAt = now.Add(delay)
+					if staleUntil.Before(stored.retryAt) {
+						stored.retryAt = staleUntil
+					}
+					item.Value = stored
+				}
 				c.totals.StaleFallbacks++
 				f.result = Result[V]{Value: stored.value, Source: Stale}
 				f.err = nil

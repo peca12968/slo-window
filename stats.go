@@ -8,6 +8,7 @@ type Counters struct {
 	LoadsStarted   uint64 // Dispatched source calls, including calls later invalidated.
 	DiscardedLoads uint64 // Invalidated source calls that have returned and been discarded.
 	StaleFallbacks uint64 // Failed loads resolved with stale data, counted once per shared load.
+	CooldownReads  uint64 // Individual reads served stale before the next retry is due.
 }
 
 // Stats captures cumulative counts and current occupancy at the same instant.
