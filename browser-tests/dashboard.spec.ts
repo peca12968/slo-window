@@ -27,13 +27,20 @@ test("changes target, imports a file, and preserves the last good report after a
   await expect(page.getByText("checkout.csv")).toBeVisible();
 });
 
-test("presents UTC rollup counts and preserves gaps in the observation window", async ({ page }) => {
-  // CI supplies the C# producer's actual output. Local UI-only runs use its published example.
+test("compares overlapping and deduplicated log counts and preserves observation gaps", async ({ page }) => {
+  // CI supplies both outputs from the same two rotated logs.
   const csv = process.env.CHECKOUT_ROLLUP_CSV
     ? readFileSync(process.env.CHECKOUT_ROLLUP_CSV)
     : Buffer.from("date,requests,errors\n2026-05-01,2,1\n2026-05-02,1,0\n2026-05-04,2,1\n");
   await page.goto("/");
-  await page.getByLabel("選擇 CSV 檔案").setInputFiles({
+  const upload = page.getByLabel("選擇 CSV 檔案");
+  const raw = process.env.RAW_ROLLUP_CSV
+    ? readFileSync(process.env.RAW_ROLLUP_CSV)
+    : Buffer.from("date,requests,errors\n2026-05-01,3,2\n2026-05-02,2,0\n2026-05-04,2,1\n");
+  await upload.setInputFiles({ name: "raw.csv", mimeType: "text/csv", buffer: raw });
+  await expect(page.locator("article.hero").getByText("57.143%", { exact: true })).toBeVisible();
+  await expect(page.getByText("共 7 筆請求")).toBeVisible();
+  await upload.setInputFiles({
     name: "checkout.csv", mimeType: "text/csv", buffer: csv,
   });
   await expect(page.locator("article.hero").getByText("60.000%", { exact: true })).toBeVisible();

@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: peca12968/access-log-rollup
-          ref: e5ad3b15e8d2cf7ee425b2d68e4c7ea0c3681b25
+          ref: f0598db162c034eb5755b2bd8e61b562b23896ff
           path: producer
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
@@ -28,7 +28,10 @@ jobs:
       - name: Convert checkout logs into browser input
         run: |
           dotnet build producer/src -c Release
-          dotnet producer/src/bin/Release/net10.0/access-rollup.dll producer/examples/checkout.ndjson > "$RUNNER_TEMP/checkout.csv"
+          logs=(producer/examples/rotation-1.ndjson producer/examples/rotation-2.ndjson)
+          dotnet producer/src/bin/Release/net10.0/access-rollup.dll "${logs[@]}" > "$RUNNER_TEMP/raw.csv"
+          dotnet producer/src/bin/Release/net10.0/access-rollup.dll --dedupe "${logs[@]}" > "$RUNNER_TEMP/checkout.csv"
       - run: npm run test:e2e
         env:
           CHECKOUT_ROLLUP_CSV: ${{ runner.temp }}/checkout.csv
+          RAW_ROLLUP_CSV: ${{ runner.temp }}/raw.csv
