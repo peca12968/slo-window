@@ -38,13 +38,16 @@ export function parseCsv(text: string): Sample[] {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export function summarize(rows: Sample[], days: number, targetBps: number) {
-  const end = Date.parse(rows[rows.length - 1].date + "T00:00:00Z");
-  const byDate = new Map(rows.map((row) => [row.date, row]));
+function summarizeWindow(
+  byDate: Map<string, Sample>,
+  days: number,
+  targetBps: number,
+  end: number,
+) {
   const series = Array.from({ length: days }, (_, index) => {
     const date = new Date(end - (days - 1 - index) * day)
       .toISOString()
-      .slice(0, 10);
+      .split("T")[0];
     return { date, sample: byDate.get(date) };
   });
   const requests = series.reduce(
@@ -68,4 +71,33 @@ export function summarize(rows: Sample[], days: number, targetBps: number) {
       : null,
     budget: allowance ? (1 - errors / allowance) * 100 : null,
   };
+}
+
+export function comparePeriods(
+  rows: Sample[],
+  days: number,
+  targetBps: number,
+) {
+  const end = Date.parse(rows[rows.length - 1].date + "T00:00:00Z");
+  const byDate = new Map(rows.map((row) => [row.date, row]));
+  const current = summarizeWindow(byDate, days, targetBps, end);
+  const previous = summarizeWindow(byDate, days, targetBps, end - days * day);
+  const fullCoverage = current.coverage === days && previous.coverage === days;
+  const difference =
+    fullCoverage &&
+    current.availability !== null &&
+    previous.availability !== null
+      ? current.availability - previous.availability
+      : null;
+  return { current, previous, difference, fullCoverage };
+}
+
+export function summarize(rows: Sample[], days: number, targetBps: number) {
+  const end = Date.parse(rows[rows.length - 1].date + "T00:00:00Z");
+  return summarizeWindow(
+    new Map(rows.map((row) => [row.date, row])),
+    days,
+    targetBps,
+    end,
+  );
 }

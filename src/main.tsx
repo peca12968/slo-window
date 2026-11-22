@@ -1,6 +1,7 @@
 import React, { useId, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { parseCsv, summarize } from "./metrics";
+import { parseCsv, comparePeriods } from "./metrics";
+import { PeriodComparison } from "./PeriodComparison";
 import sample from "./sample.csv?raw";
 import sampleUrl from "./sample.csv?url";
 import "./style.css";
@@ -13,7 +14,8 @@ function Dashboard() {
   const [target, setTarget] = useState(9990);
   const [error, setError] = useState("");
   const field = useId();
-  const report = summarize(rows, days, target);
+  const comparison = comparePeriods(rows, days, target);
+  const report = comparison.current;
   const dailyRate = (count: number, total: number) =>
     total ? (count / total) * 100 : 0;
   const threshold = (10000 - target) / 100;
@@ -146,6 +148,7 @@ function Dashboard() {
           </table>
         </details>
       </section>
+      <PeriodComparison comparison={comparison} />
       <section className="imports">
         <div>
           <h2>匯入每日統計</h2>

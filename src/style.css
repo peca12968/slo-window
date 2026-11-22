@@ -190,6 +190,23 @@ th:first-child {
 .imports {
   gap: 18px;
 }
+.comparison table {
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+.comparison th:first-child {
+  width: 23%;
+}
+.period-range {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: #496355;
+}
+.comparison details {
+  margin-top: 14px;
+  overflow-wrap: anywhere;
+}
 .imports p {
   margin-bottom: 0;
 }
