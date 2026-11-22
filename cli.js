@@ -2,7 +2,7 @@ import {setTimeout as delay} from "node:timers/promises";
 import pg from "pg";
 import {initialize, enqueue, claim, complete, inspect} from "./queue.js";
 
-const usage = "node cli.js init | enqueue TEXT | show UUID | work [--once]";
+const usage = "node cli.js init | enqueue TEXT [--key KEY] | show UUID | work [--once]";
 const [command, ...args] = process.argv.slice(2);
 let stopping = false;
 process.on("SIGINT", () => { stopping = true; });
@@ -13,8 +13,8 @@ async function run(db) {
     await initialize(db);
     return;
   }
-  if (command === "enqueue" && args.length === 1) {
-    console.log(await enqueue(db, args[0]));
+  if (command === "enqueue" && (args.length === 1 || (args.length === 3 && args[1] === "--key"))) {
+    console.log(await enqueue(db, args[0], 3, args[2]));
     return;
   }
   if (command === "show" && args.length === 1) {

@@ -5,16 +5,28 @@ export async function initialize(db) {
   await db.query(await readFile(new URL("./schema.sql", import.meta.url), "utf8"));
 }
 
-export async function enqueue(db, text, maxAttempts = 3) {
+export async function enqueue(db, text, maxAttempts = 3, requestKey = null) {
   if (typeof text !== "string" || Buffer.byteLength(text) > 65_536)
     throw new Error("Expected text of at most 65536 UTF-8 bytes");
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)
     throw new Error("Expected 1 to 10 attempts");
+  if (requestKey !== null && (typeof requestKey !== "string" || !requestKey.length ||
+      Buffer.byteLength(requestKey) > 256 || requestKey.includes("\0")))
+    throw new Error("Expected a nonempty request key of at most 256 UTF-8 bytes without NUL");
   const {rows} = await db.query(
-    "INSERT INTO relay_jobs (id, payload, max_attempts) VALUES ($1,$2,$3) RETURNING id",
-    [randomUUID(), text, maxAttempts]
+    `INSERT INTO relay_jobs (id, payload, max_attempts, request_key) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (request_key) WHERE request_key IS NOT NULL DO NOTHING RETURNING id`,
+    [randomUUID(), text, maxAttempts, requestKey]
   );
-  return rows[0].id;
+  if (rows.length) return rows[0].id;
+  // A separate READ COMMITTED statement can see the winning concurrent insert.
+  const {rows: [existing]} = await db.query(
+    "SELECT id, payload, max_attempts FROM relay_jobs WHERE request_key=$1", [requestKey]
+  );
+  if (!existing) throw new Error("The conflicting job disappeared; retry submission");
+  if (existing.payload !== text || existing.max_attempts !== maxAttempts)
+    throw new Error("Request key already used with a different payload or retry limit");
+  return existing.id;
 }
 
 export async function claim(db, leaseMs = 30_000) {

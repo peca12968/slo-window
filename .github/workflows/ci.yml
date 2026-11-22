@@ -29,6 +29,8 @@ jobs:
       - name: Exercise CLI from enqueue to result
         run: |
           node cli.js init
-          id=$(node cli.js enqueue "queue integration demo")
+          id=$(node cli.js enqueue "queue integration demo" --key demo-1)
+          test "$id" = "$(node cli.js enqueue 'queue integration demo' --key demo-1)"
           node cli.js work --once
+          test "$id" = "$(node cli.js enqueue 'queue integration demo' --key demo-1)"
           node cli.js show "$id" | node --input-type=commonjs -e "const j=JSON.parse(require('node:fs').readFileSync(0)); if(j.state!=='done' || j.result.words!==3) process.exit(1)"

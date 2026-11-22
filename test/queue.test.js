@@ -25,6 +25,50 @@ after(async () => {
 
 const expire = id => db.query("UPDATE relay_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1", [id]);
 
+test("twelve concurrent keyed submissions yield a single job and preserve its completed result", async () => {
+  const ids = await Promise.all(Array.from({length: 12}, () => enqueue(db, "invoice 42", 3, "invoice-42")));
+  assert.equal(new Set(ids).size, 1);
+  const job = await claim(db);
+  assert.equal(job.id, ids[0]);
+  assert.equal(await claim(db), null);
+  assert.equal(await complete(db, job, {words:2}), true);
+  assert.equal(await enqueue(db, "invoice 42", 3, "invoice-42"), job.id);
+  assert.deepEqual((await inspect(db, job.id)).result, {words:2});
+  assert.equal(await claim(db), null);
+});
+
+test("conflicting concurrent inputs cannot overwrite the winner", async () => {
+  const inputs = ["first", "second"];
+  const results = await Promise.allSettled(inputs.map(text => enqueue(db, text, 3, "batch")));
+  const winner = results.findIndex(result => result.status === "fulfilled");
+  assert.notEqual(winner, -1);
+  assert.match(results[1 - winner].reason.message, /different payload or retry limit/);
+  const job = await claim(db);
+  assert.equal(job.payload, inputs[winner]);
+  await assert.rejects(enqueue(db, inputs[winner], 2, "batch"), /retry limit/);
+});
+
+test("independent submissions and invalid keys retain distinct semantics", async () => {
+  const ids = await Promise.all([null, null, "A", "a"].map(key => enqueue(db, "same", 3, key)));
+  assert.equal(new Set(ids).size, 4);
+  for (const key of ["", "收".repeat(86), "broken\0key", 9])
+    await assert.rejects(enqueue(db, "same", 3, key), /request key/);
+});
+
+test("initialization upgrades a legacy job without making it a keyed submission", async () => {
+  // This schema belongs only to this test suite.
+  await db.query("ALTER TABLE relay_jobs DROP COLUMN request_key");
+  const id = randomUUID();
+  await db.query("INSERT INTO relay_jobs(id,payload,max_attempts) VALUES ($1,'legacy',3)", [id]);
+  await initialize(db);
+  await initialize(db);
+  const legacy = await claim(db);
+  assert.equal(legacy.id, id);
+  const keyed = await enqueue(db, "legacy", 3, "import");
+  assert.notEqual(keyed, id);
+  assert.equal(await enqueue(db, "legacy", 3, "import"), keyed);
+});
+
 test("twelve concurrent workers claim each of five jobs once", async () => {
   const ids = await Promise.all(Array.from({length: 5}, (_, i) => enqueue(db, "payload" + i)));
   const leases = (await Promise.all(Array.from({length: 12}, () => claim(db)))).filter(Boolean);

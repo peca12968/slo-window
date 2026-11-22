@@ -15,3 +15,5 @@ CREATE TABLE IF NOT EXISTS relay_jobs (
 );
 CREATE INDEX IF NOT EXISTS relay_ready ON relay_jobs (available_at, id) WHERE state = 'ready';
 CREATE INDEX IF NOT EXISTS relay_running ON relay_jobs (lease_until, id) WHERE state = 'running';
+ALTER TABLE relay_jobs ADD COLUMN IF NOT EXISTS request_key text COLLATE "C";
+CREATE UNIQUE INDEX IF NOT EXISTS relay_request_key ON relay_jobs (request_key) WHERE request_key IS NOT NULL;
