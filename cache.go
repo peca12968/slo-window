@@ -11,6 +11,9 @@ import (
 
 var ErrBusy = errors.New("cache: too many distinct loads in flight")
 
+// ErrInvalidated means a write invalidated the unfinished load this caller had joined.
+var ErrInvalidated = errors.New("cache: load invalidated")
+
 type Source string
 
 const (
@@ -44,6 +47,7 @@ type entry[V any] struct {
 
 type flight[V any] struct {
 	done   chan struct{}
+	cancel context.CancelFunc
 	result Result[V]
 	err    error
 }
@@ -55,6 +59,8 @@ type Cache[V any] struct {
 	items   map[string]*list.Element
 	order   list.List
 	flights map[string]*flight[V]
+	// Includes invalidated loaders that have not returned yet.
+	activeLoads int
 }
 
 func New[V any](cfg Config, load Loader[V]) (*Cache[V], error) {
@@ -85,13 +91,15 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 	}
 	f := c.flights[key]
 	if f == nil {
-		if len(c.flights) >= c.config.MaxInFlight {
+		if c.activeLoads >= c.config.MaxInFlight {
 			c.mu.Unlock()
 			return Result[V]{}, ErrBusy
 		}
-		f = &flight[V]{done: make(chan struct{})}
+		loadCtx, cancel := context.WithTimeout(context.Background(), c.config.LoadTimeout)
+		f = &flight[V]{done: make(chan struct{}), cancel: cancel}
 		c.flights[key] = f
-		go c.refresh(key, f)
+		c.activeLoads++
+		go c.refresh(loadCtx, key, f)
 	}
 	c.mu.Unlock()
 
@@ -106,9 +114,25 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 	}
 }
 
-func (c *Cache[V]) refresh(key string, f *flight[V]) {
-	ctx, cancel := context.WithTimeout(context.Background(), c.config.LoadTimeout)
-	defer cancel()
+// Invalidate forgets key and wakes waiters on its unfinished load with ErrInvalidated.
+// Call it after the source write commits. An old loader can no longer publish its result.
+func (c *Cache[V]) Invalidate(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if item := c.items[key]; item != nil {
+		delete(c.items, key)
+		c.order.Remove(item)
+	}
+	if f := c.flights[key]; f != nil {
+		delete(c.flights, key)
+		f.cancel()
+		f.err = ErrInvalidated
+		close(f.done)
+	}
+}
+
+func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
+	defer f.cancel()
 	value, err := c.load(ctx, key)
 	if deadline := ctx.Err(); deadline != nil {
 		err = deadline
@@ -116,6 +140,10 @@ func (c *Cache[V]) refresh(key string, f *flight[V]) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.activeLoads--
+	if c.flights[key] != f {
+		return
+	}
 	now := c.config.Now()
 	item := c.items[key]
 	if err == nil {

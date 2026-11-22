@@ -3,8 +3,11 @@ package cache
 import (
 	"context"
 	"errors"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -292,4 +295,144 @@ func TestDeadlineAndAlreadyCancelledCaller(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatal(calls.Load())
 	}
+}
+
+func TestPriceChangeDiscardsLateRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var price, calls atomic.Int64
+		price.Store(1299)
+		allowReturn := make(chan struct{})
+		release := sync.OnceFunc(func() { close(allowReturn) })
+		defer release()
+		c := mustCache(t, settings(&clock{}), func(context.Context, string) (string, error) {
+			value := price.Load()
+			if calls.Add(1) == 1 {
+				<-allowReturn // The source already read the old price and ignores cancellation.
+			}
+			return strconv.FormatInt(value, 10), nil
+		})
+		waiters := make(chan error, 12)
+		for range 12 {
+			go func() { _, err := c.Get(context.Background(), "sku"); waiters <- err }()
+		}
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatal("expected one unfinished read of the old price")
+		}
+		price.Store(1499)
+		c.Invalidate("sku")
+		for range 12 {
+			if err := take(t, waiters); !errors.Is(err, ErrInvalidated) {
+				t.Fatalf("old waiter: %v", err)
+			}
+		}
+		if got := get(t, c, "sku", Loaded); got != "1499" {
+			t.Fatal(got)
+		}
+		release()
+		synctest.Wait() // The late loader completed its cache bookkeeping.
+		if got := get(t, c, "sku", Hit); got != "1499" || calls.Load() != 2 {
+			t.Fatalf("cached price %s, source reads %d", got, calls.Load())
+		}
+		t.Log("12 old waiters invalidated; origin reads: 2; final cache hit: 1499 cents")
+	})
+}
+
+func TestLateCompletionCannotRemoveReplacementFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int64
+		oldGate, newGate := make(chan struct{}), make(chan struct{})
+		finishOld := sync.OnceFunc(func() { close(oldGate) })
+		finishNew := sync.OnceFunc(func() { close(newGate) })
+		defer finishOld()
+		defer finishNew()
+		c := mustCache(t, settings(&clock{}), func(context.Context, string) (string, error) {
+			if calls.Add(1) == 1 {
+				<-oldGate
+				return "", errors.New("old request failed")
+			}
+			<-newGate
+			return "new", nil
+		})
+		oldErr := make(chan error, 1)
+		go func() { _, err := c.Get(context.Background(), "sku"); oldErr <- err }()
+		synctest.Wait()
+		c.Invalidate("sku")
+		if err := take(t, oldErr); !errors.Is(err, ErrInvalidated) {
+			t.Fatal(err)
+		}
+		results := make(chan Result[string], 2)
+		read := func() { v, _ := c.Get(context.Background(), "sku"); results <- v }
+		go read()
+		synctest.Wait()
+		finishOld()
+		synctest.Wait()
+		go read()
+		synctest.Wait()
+		finishNew()
+		for range 2 {
+			if v := take(t, results); v != (Result[string]{"new", Loaded}) {
+				t.Fatal(v)
+			}
+		}
+		if calls.Load() != 2 {
+			t.Fatal("replacement load was not shared", calls.Load())
+		}
+	})
+}
+
+func TestInvalidatedLoaderStillConsumesCapacityUntilItReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := settings(&clock{})
+		cfg.MaxInFlight = 1
+		gate := make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		defer release()
+		started := make(chan context.Context, 1)
+		c := mustCache(t, cfg, func(ctx context.Context, key string) (string, error) {
+			started <- ctx
+			<-gate
+			return key, nil
+		})
+		waiter := make(chan error, 1)
+		go func() { _, err := c.Get(context.Background(), "sku"); waiter <- err }()
+		loadCtx := take(t, started)
+		c.Invalidate("sku")
+		c.Invalidate("sku")
+		if !errors.Is(loadCtx.Err(), context.Canceled) || !errors.Is(take(t, waiter), ErrInvalidated) {
+			t.Fatal("load context or waiter was not cancelled")
+		}
+		for _, key := range []string{"sku", "other"} {
+			if _, err := c.Get(context.Background(), key); !errors.Is(err, ErrBusy) {
+				t.Fatalf("Get(%s): %v", key, err)
+			}
+		}
+		release()
+		synctest.Wait()
+		get(t, c, "sku", Loaded)
+	})
+}
+
+func TestInvalidationDropsGraceValueAndPreservesOtherKeys(t *testing.T) {
+	clk := &clock{}
+	var offline atomic.Bool
+	failure := errors.New("offline")
+	c := mustCache(t, settings(clk), func(_ context.Context, key string) (string, error) {
+		if offline.Load() {
+			return "", failure
+		}
+		return key, nil
+	})
+	get(t, c, "old", Loaded)
+	clk.seconds.Store(8)
+	get(t, c, "other", Loaded)
+	clk.seconds.Store(11)
+	offline.Store(true)
+	get(t, c, "old", Stale)
+	c.Invalidate("old")
+	c.Invalidate("missing")
+	if _, err := c.Get(context.Background(), "old"); !errors.Is(err, failure) {
+		t.Fatal("invalidated price was still available for fallback", err)
+	}
+	get(t, c, "other", Hit)
 }
