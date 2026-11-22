@@ -46,10 +46,12 @@ type entry[V any] struct {
 }
 
 type flight[V any] struct {
-	done   chan struct{}
-	cancel context.CancelFunc
-	result Result[V]
-	err    error
+	done          chan struct{}
+	cancel        context.CancelFunc
+	result        Result[V]
+	err           error
+	queued        *list.Element
+	queuedWaiters int
 }
 
 type Cache[V any] struct {
@@ -61,18 +63,26 @@ type Cache[V any] struct {
 	flights map[string]*flight[V]
 	// Includes invalidated loaders that have not returned yet.
 	activeLoads int
+	pending     list.List // FIFO of distinct keys waiting for a loader slot.
+	maxQueued   int
 }
 
 func New[V any](cfg Config, load Loader[V]) (*Cache[V], error) {
+	return NewWithQueue(cfg, 0, load)
+}
+
+// NewWithQueue additionally admits up to maxQueued distinct waiting keys.
+// LoadTimeout starts when dispatched. Get's context also covers time in the queue.
+func NewWithQueue[V any](cfg Config, maxQueued int, load Loader[V]) (*Cache[V], error) {
 	if cfg.FreshFor <= 0 || cfg.StaleIfError < 0 || cfg.LoadTimeout <= 0 ||
-		cfg.MaxEntries < 1 || cfg.MaxInFlight < 1 || load == nil {
+		cfg.MaxEntries < 1 || cfg.MaxInFlight < 1 || maxQueued < 0 || load == nil {
 		return nil, errors.New("cache: invalid durations, capacity, or loader")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
 	return &Cache[V]{config: cfg, load: load, items: make(map[string]*list.Element),
-		flights: make(map[string]*flight[V])}, nil
+		flights: make(map[string]*flight[V]), maxQueued: maxQueued}, nil
 }
 
 // Get waits for the shared load for key. Cancelling ctx detaches only this waiter.
@@ -91,20 +101,26 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 	}
 	f := c.flights[key]
 	if f == nil {
-		if c.activeLoads >= c.config.MaxInFlight {
+		if c.activeLoads >= c.config.MaxInFlight && c.pending.Len() >= c.maxQueued {
 			c.mu.Unlock()
 			return Result[V]{}, ErrBusy
 		}
-		loadCtx, cancel := context.WithTimeout(context.Background(), c.config.LoadTimeout)
-		f = &flight[V]{done: make(chan struct{}), cancel: cancel}
+		f = &flight[V]{done: make(chan struct{})}
 		c.flights[key] = f
-		c.activeLoads++
-		go c.refresh(loadCtx, key, f)
+		if c.activeLoads < c.config.MaxInFlight {
+			c.start(key, f)
+		} else {
+			f.queued = c.pending.PushBack(key)
+		}
+	}
+	if f.queued != nil {
+		f.queuedWaiters++
 	}
 	c.mu.Unlock()
 
 	select {
 	case <-ctx.Done():
+		c.leaveQueue(key, f)
 		return Result[V]{}, ctx.Err()
 	case <-f.done:
 		if err := ctx.Err(); err != nil {
@@ -112,6 +128,32 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 		}
 		return f.result, f.err
 	}
+}
+
+func (c *Cache[V]) leaveQueue(key string, f *flight[V]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if f.queued == nil {
+		return
+	}
+	f.queuedWaiters--
+	if f.queuedWaiters == 0 {
+		c.removeQueued(f)
+		delete(c.flights, key)
+	}
+}
+
+// All admission and dispatch operations run under mu.
+func (c *Cache[V]) start(key string, f *flight[V]) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.config.LoadTimeout)
+	f.cancel = cancel
+	c.activeLoads++
+	go c.refresh(ctx, key, f)
+}
+
+func (c *Cache[V]) removeQueued(f *flight[V]) {
+	c.pending.Remove(f.queued)
+	f.queued = nil
 }
 
 // Invalidate forgets key and wakes waiters on its unfinished load with ErrInvalidated.
@@ -125,7 +167,11 @@ func (c *Cache[V]) Invalidate(key string) {
 	}
 	if f := c.flights[key]; f != nil {
 		delete(c.flights, key)
-		f.cancel()
+		if f.queued != nil {
+			c.removeQueued(f)
+		} else {
+			f.cancel()
+		}
 		f.err = ErrInvalidated
 		close(f.done)
 	}
@@ -141,6 +187,12 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.activeLoads--
+	if first := c.pending.Front(); first != nil {
+		nextKey := first.Value.(string)
+		next := c.flights[nextKey]
+		c.removeQueued(next)
+		c.start(nextKey, next)
+	}
 	if c.flights[key] != f {
 		return
 	}
