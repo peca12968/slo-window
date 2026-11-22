@@ -45,6 +45,7 @@ type Loader[V any] func(context.Context, string) (V, error)
 type entry[V any] struct {
 	key        string
 	value      V
+	weight     uint64
 	freshUntil time.Time
 	retryAt    time.Time // Initially freshUntil, then bounded by the stale deadline.
 }
@@ -70,6 +71,8 @@ type Cache[V any] struct {
 	activeLoads int
 	pending     list.List // FIFO of distinct keys waiting for a loader slot.
 	maxQueued   int
+	weigh       func(string, V) uint64
+	weightStats WeightStats
 }
 
 func New[V any](cfg Config, load Loader[V]) (*Cache[V], error) {
@@ -179,8 +182,7 @@ func (c *Cache[V]) Invalidate(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if item := c.items[key]; item != nil {
-		delete(c.items, key)
-		c.order.Remove(item)
+		c.removeEntry(item)
 	}
 	if f := c.flights[key]; f != nil {
 		delete(c.flights, key)
@@ -197,6 +199,10 @@ func (c *Cache[V]) Invalidate(key string) {
 func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 	defer f.cancel()
 	value, err := c.load(ctx, key)
+	var weight uint64
+	if err == nil && c.weigh != nil && ctx.Err() == nil {
+		weight = c.weigh(key, value)
+	}
 	if deadline := ctx.Err(); deadline != nil {
 		err = deadline
 	}
@@ -218,18 +224,7 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 	item := c.items[key]
 	if err == nil {
 		freshUntil := now.Add(c.config.FreshFor)
-		updated := entry[V]{key: key, value: value, freshUntil: freshUntil, retryAt: freshUntil}
-		if item != nil {
-			item.Value = updated
-			c.order.MoveToFront(item)
-		} else {
-			c.items[key] = c.order.PushFront(updated)
-			if c.order.Len() > c.config.MaxEntries {
-				victim := c.order.Back()
-				delete(c.items, victim.Value.(entry[V]).key)
-				c.order.Remove(victim)
-			}
-		}
+		c.admit(entry[V]{key: key, value: value, weight: weight, freshUntil: freshUntil, retryAt: freshUntil})
 		f.result = Result[V]{Value: value, Source: Loaded}
 	} else {
 		f.err = err
@@ -249,8 +244,7 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 				f.err = nil
 				c.order.MoveToFront(item)
 			} else {
-				delete(c.items, key)
-				c.order.Remove(item)
+				c.removeEntry(item)
 			}
 		}
 	}

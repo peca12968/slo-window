@@ -67,6 +67,16 @@ go test -v -run '^TestQueueBurstSharesFIFOAdmission$'
 
 ## 如何使用
 
+### 同時限制項目數與資料大小
+
+圖文快取若只有筆數上限，幾個大型物件就可能占滿預算。可用 `NewWithWeightLimit(cfg, maxQueued, limit, weigh, loader)` 指定總權重上限。若快取的是位元組切片，權重函式可回傳 `uint64(len(value))`。權重以成功載入時的值計算，函式可同時被多個載入呼叫。這個上限計算已保留資料的權重，行程的實際記憶體還包含執行中的載入、索引、配置器及呼叫端持有的資料。
+
+執行 `go test -v -run ExampleNewWithWeightLimit` 可重現 10 B 的快取。先放入 A、B、C，各為 3、3、4 B，再讀一次 A。載入 7 B 的 D 時，依最近使用順序淘汰 B 和 C，保留 A 與 D。之後讀取 12 B 的物件，呼叫者會取得內容，A 與 D 仍占 10 B。若同一鍵原本有較小舊值，新值過大時會移除該鍵的舊值。項目數上限亦持續生效，權重為零的資料仍計一筆。
+
+`WeightStats()` 可取得設定上限、目前保留權重及超額載入累計次數。12 位讀者同時等待同一個 12 B 物件時，共用一次來源讀取，超額計數增加一次。快取失效、載入錯誤且超過資料寬限期，或被 LRU 淘汰時，都會同步扣除原權重。[可執行範例](example_test.go) · [權重與並行測試](weight_test.go)
+
+### 建立實例與讀取
+
 以 `cache.New(cfg, loader)` 建立實例。loader 的型別為 `func(context.Context, string) (V, error)`，可回傳任何型別 V。呼叫 `Get(ctx, key)` 會回傳帶 Value、Source 的結果或錯誤。`hit` 表示直接讀取新鮮資料，`loaded` 表示這次共享載入成功。若 V 含 map、slice 或指標，讀取端應將共享值視為唯讀。
 
 - **同鍵並行**　第一位讀者建立載入作業，後續讀者等待同一個結果。資料來源呼叫在 mutex 外執行，因此不同鍵可以同時載入。
