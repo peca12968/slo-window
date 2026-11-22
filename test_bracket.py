@@ -81,7 +81,7 @@ class BracketTests(unittest.TestCase):
                 edges.append(item)
             queries = [{"id": a+b, "from": a, "to": b, "start_us": 100, "end_us": 103}
                        for a, b in product(hosts, repeat=2)]
-            result = solve({"hosts": hosts, "reference": "a", "messages": edges, "queries": queries})
+            result = solve({"hosts": hosts, "reference": "a", "messages": edges, "queries": queries}, pairs=True)
             possible = []
             for y, z in product(range(-5, 6), repeat=2):
                 off = {"a": 0, "b": y, "c": z}
@@ -93,6 +93,9 @@ class BracketTests(unittest.TestCase):
                 for q, r in zip(queries, result["queries"], strict=True):
                     values = [3 + off[q["to"]] - off[q["from"]] for off in possible]
                     self.assertEqual((r["lower_us"], r["upper_us"]), (min(values), max(values)))
+                for p in result["offset_pairs_us"]:
+                    values = [off[p["to"]] - off[p["from"]] for off in possible]
+                    self.assertEqual((p["lower_us"], p["upper_us"]), (min(values), max(values)))
             else:
                 cycle = result["cycle"]
                 for i, edge in enumerate(cycle):

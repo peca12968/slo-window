@@ -81,7 +81,7 @@ def number(row, field):
     return value
 
 
-def solve(plan, explain=False):
+def solve(plan, explain=False, pairs=False):
     hosts = plan.get("hosts") if isinstance(plan, dict) else None
     if not isinstance(hosts, list) or not hosts or not all(isinstance(h, str) and h.strip() for h in hosts):
         raise ValueError("expected nonempty list of host names")
@@ -130,16 +130,26 @@ def solve(plan, explain=False):
             result["upper_path"] = witness(cache[q["from"]][1], q["from"], q["to"])
             result["inverse_path"] = witness(cache[q["to"]][1], q["to"], q["from"])
         comparisons.append(result)
-    return {"consistent": True, "reference": reference, "offsets": offsets, "queries": comparisons}
+    report = {"consistent": True, "reference": reference, "offsets": offsets, "queries": comparisons}
+    if pairs:
+        bounds = []
+        for a in hosts:
+            for b in hosts:
+                inverse = bound(b, a)
+                bounds.append({"from": a, "to": b, "lower_us": -inverse if inverse is not None else None,
+                               "upper_us": bound(a, b)})
+        report["offset_pairs_us"] = bounds
+    return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--explain", action="store_true", help="show message constraints supporting each query bound")
+    parser.add_argument("--pairs", action="store_true", help="export tight offset differences for every ordered host pair")
     args = parser.parse_args()
     try:
-        report = solve(json.loads(args.capture.read_text(encoding="utf-8-sig")), args.explain)
+        report = solve(json.loads(args.capture.read_text(encoding="utf-8-sig")), args.explain, args.pairs)
     except (OSError, ValueError) as error:
         parser.exit(2, f"{error}\n")
     print(json.dumps(report, indent=2))
