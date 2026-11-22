@@ -56,6 +56,7 @@ type flight[V any] struct {
 
 type Cache[V any] struct {
 	mu      sync.Mutex
+	totals  Counters
 	config  Config
 	load    Loader[V]
 	items   map[string]*list.Element
@@ -94,6 +95,7 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 	if item := c.items[key]; item != nil {
 		stored := item.Value.(entry[V])
 		if c.config.Now().Before(stored.freshUntil) {
+			c.totals.Hits++
 			c.order.MoveToFront(item)
 			c.mu.Unlock()
 			return Result[V]{Value: stored.value, Source: Hit}, nil
@@ -102,6 +104,7 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 	f := c.flights[key]
 	if f == nil {
 		if c.activeLoads >= c.config.MaxInFlight && c.pending.Len() >= c.maxQueued {
+			c.totals.BusyRejections++
 			c.mu.Unlock()
 			return Result[V]{}, ErrBusy
 		}
@@ -112,6 +115,8 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (Result[V], error) {
 		} else {
 			f.queued = c.pending.PushBack(key)
 		}
+	} else {
+		c.totals.SharedJoins++
 	}
 	if f.queued != nil {
 		f.queuedWaiters++
@@ -148,6 +153,7 @@ func (c *Cache[V]) start(key string, f *flight[V]) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.LoadTimeout)
 	f.cancel = cancel
 	c.activeLoads++
+	c.totals.LoadsStarted++
 	go c.refresh(ctx, key, f)
 }
 
@@ -194,6 +200,7 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 		c.start(nextKey, next)
 	}
 	if c.flights[key] != f {
+		c.totals.DiscardedLoads++
 		return
 	}
 	now := c.config.Now()
@@ -217,6 +224,7 @@ func (c *Cache[V]) refresh(ctx context.Context, key string, f *flight[V]) {
 		if item != nil {
 			stored := item.Value.(entry[V])
 			if now.Before(stored.freshUntil.Add(c.config.StaleIfError)) {
+				c.totals.StaleFallbacks++
 				f.result = Result[V]{Value: stored.value, Source: Stale}
 				f.err = nil
 				c.order.MoveToFront(item)

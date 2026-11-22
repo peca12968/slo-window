@@ -97,10 +97,16 @@ func run() error {
 	if finalErr == nil {
 		return fmt.Errorf("expected upstream failure after grace period")
 	}
+	stats := c.Stats()
+	if stats.LoadsStarted != uint64(calls.Load()) || stats.StaleFallbacks != 1 ||
+		stats.Hits+stats.SharedJoins != 11 {
+		return fmt.Errorf("unexpected cache statistics: %+v", stats)
+	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"concurrent_reads": 12, "origin_calls_for_burst": burstCalls,
 		"at_second_10": fallback.Source, "price_cents": fallback.Value.Cents,
 		"at_second_15": finalErr.Error(), "total_origin_calls": calls.Load(),
+		"cache_stats": stats,
 	})
 }
 

@@ -43,6 +43,18 @@ go test -v -run '^TestQueueBurstSharesFIFOAdmission$'
 
 商品改價成功後，`Invalidate` 會移除排隊中的舊查價並喚醒讀者。若舊查價已送達來源，即使忽略取消訊號，也必須等它返回後才會釋出執行名額。使用 `New(cfg, loader)` 或設定零個等候名額會維持原有的立即回報行為。[等候、取消與失效測試](queue_test.go)
 
+## 如何觀察來源壓力
+
+服務可呼叫 `s := prices.Stats()`，在同一時點取得執行中的來源呼叫數 `s.ActiveLoads`、排隊鍵數 `s.QueuedKeys` 和保留的鍵數 `s.Entries`。快照以固定時間取得，內容只有數字，可直接交給監控系統。若來源忽略取消訊號，快照會持續反映它占用的執行名額，直到來源返回。
+
+| 累計欄位 | 如何解讀 |
+| --- | --- |
+| Hits、SharedJoins、BusyRejections | 分別計算直接命中的讀取、加入既有查詢的讀者，以及因額滿而被拒的讀取。加入後自行取消的讀者仍計入 SharedJoins。 |
+| LoadsStarted、DiscardedLoads | 分別計算實際派出的來源呼叫，以及失效後才返回、結果遭丟棄的來源呼叫。 |
+| StaleFallbacks | 每次來源呼叫失敗而改用寬限期資料時加一。即使有 12 人共用同一次讀取，也只加一。 |
+
+執行 `go test -v -run '^TestStats' ./...` 可重現兩種情境。第一個測試讓來源占滿一個名額，另有一個鍵排隊，觀察 11 次加入、1 次額滿拒絕，以及失效呼叫釋放名額前後的變化。第二個測試驗證 12 位讀者共用一次舊值回覆，並檢查寬限期結束後的失敗不增加舊值回覆次數。[觀測測試](stats_test.go)
+
 ## 如何使用
 
 以 `cache.New(cfg, loader)` 建立實例。loader 的型別為 `func(context.Context, string) (V, error)`，可回傳任何型別 V。呼叫 `Get(ctx, key)` 會回傳帶 Value、Source 的結果或錯誤。`hit` 表示直接讀取新鮮資料，`loaded` 表示這次共享載入成功。若 V 含 map、slice 或指標，讀取端應將共享值視為唯讀。
