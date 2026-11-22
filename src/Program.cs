@@ -8,41 +8,61 @@ internal static class Program
 {
     private const long MaxDailyCount = 999_999_999_999; // SLO Window input limit
 
+    private readonly record struct ObservedRequest(DateTimeOffset Instant, int Status, string Source, long Line);
+
     public static int Main(string[] args)
     {
         if (args is ["--help"])
         {
-            Console.WriteLine("access-rollup [FILE|-]   Read NDJSON and write daily SLO CSV to stdout.");
+            Console.WriteLine("access-rollup [--dedupe] [FILE|- ...]   Read NDJSON and write daily SLO CSV to stdout.");
+            Console.WriteLine("--dedupe requires request_id on every record and rejects conflicting observations.");
             return 0;
         }
-        if (args.Length > 1)
+        bool dedupe = args.Length > 0 && args[0] == "--dedupe";
+        string[] sources = dedupe ? args[1..] : args;
+        if (sources.Length == 0) sources = ["-"];
+        if (sources.Count(s => s == "-") > 1)
         {
-            Console.Error.WriteLine("Expected one input file, '-' or standard input.");
+            Console.Error.WriteLine("Standard input may be specified only once.");
             return 2;
         }
         try
         {
-            using var input = args.Length == 0 || args[0] == "-"
-                ? Console.OpenStandardInput() : File.OpenRead(args[0]);
-            using var reader = new StreamReader(input, new UTF8Encoding(false, true), false);
-            var counts = Aggregate(reader);
+            var counts = new SortedDictionary<DateOnly, (long Requests, long Errors)>();
+            Dictionary<string, ObservedRequest>? seen = dedupe ? new(StringComparer.Ordinal) : null;
+            foreach (var source in sources)
+            {
+                using var input = source == "-" ? Console.OpenStandardInput() : File.OpenRead(source);
+                using var reader = new StreamReader(input, new UTF8Encoding(false, true), false);
+                try
+                {
+                    Aggregate(reader, source == "-" ? "<stdin>" : source, counts, seen);
+                }
+                catch (DecoderFallbackException ex)
+                {
+                    throw new InvalidDataException($"{source}: invalid UTF-8", ex);
+                }
+            }
+            if (counts.Count == 0) throw new InvalidDataException("Input contains no request records.");
             Console.WriteLine("date,requests,errors");
             foreach (var (date, day) in counts)
                 Console.WriteLine(FormattableString.Invariant($"{date:yyyy-MM-dd},{day.Requests},{day.Errors}"));
             return 0;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                      or InvalidDataException or DecoderFallbackException)
+                                      or InvalidDataException or ArgumentException)
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
         }
     }
 
-    private static SortedDictionary<DateOnly, (long Requests, long Errors)> Aggregate(TextReader input)
+    private static void Aggregate(TextReader input, string source,
+                                  SortedDictionary<DateOnly, (long Requests, long Errors)> counts,
+                                  Dictionary<string, ObservedRequest>? seen)
     {
-        var counts = new SortedDictionary<DateOnly, (long Requests, long Errors)>();
         long number = 0;
+        var options = new JsonDocumentOptions { AllowDuplicateProperties = seen is null };
         while (input.ReadLine() is { } line)
         {
             number++;
@@ -50,7 +70,7 @@ internal static class Program
             if (string.IsNullOrWhiteSpace(line)) continue;
             try
             {
-                using var record = JsonDocument.Parse(line);
+                using var record = JsonDocument.Parse(line, options);
                 var root = record.RootElement;
                 if (root.ValueKind != JsonValueKind.Object ||
                     !root.TryGetProperty("timestamp", out var timestamp) ||
@@ -62,19 +82,32 @@ internal static class Program
                 if (status.ValueKind != JsonValueKind.Number ||
                     !status.TryGetInt32(out var code) || code is < 100 or > 599)
                     throw new FormatException("status must be an integer between 100 and 599");
+                if (seen is not null && IsRepeat(root, seen, new(instant, code, source, number)))
+                    continue;
                 var date = DateOnly.FromDateTime(instant.UtcDateTime);
                 var day = counts.GetValueOrDefault(date);
                 if (day.Requests >= MaxDailyCount || (day.Requests == 0 && counts.Count == 3660))
                     throw new FormatException("data exceeds SLO Window CSV limits");
                 counts[date] = (day.Requests + 1, day.Errors + (code >= 500 ? 1 : 0));
             }
-            catch (Exception ex) when (ex is FormatException or JsonException)
+            catch (Exception ex) when (ex is FormatException or JsonException or InvalidOperationException)
             {
-                throw new InvalidDataException($"Line {number}: {ex.Message}", ex);
+                throw new InvalidDataException($"{source}: Line {number}: {ex.Message}", ex);
             }
         }
-        if (counts.Count == 0) throw new InvalidDataException("Input contains no request records.");
-        return counts;
+    }
+
+    private static bool IsRepeat(JsonElement root, Dictionary<string, ObservedRequest> seen, ObservedRequest record)
+    {
+        if (!root.TryGetProperty("request_id", out var field) || field.ValueKind != JsonValueKind.String ||
+            field.GetString() is not { Length: >= 1 and <= 128 } id ||
+            !id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or ':'))
+            throw new FormatException("request_id must be 1 to 128 ASCII letters, digits or -_.:");
+        if (seen.TryAdd(id, record)) return false;
+        var previous = seen[id];
+        if (previous.Instant != record.Instant || previous.Status != record.Status)
+            throw new FormatException($"conflicting request_id '{id}', first seen at {previous.Source}: Line {previous.Line}");
+        return true;
     }
 
     private static bool TryReadInstant(string text, out DateTimeOffset instant)

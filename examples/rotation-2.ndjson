@@ -1,0 +1,4 @@
+{"request_id":"r2","timestamp":"2026-05-01T23:30:00Z","status":503}
+{"request_id":"r3","timestamp":"2026-05-02T00:00:00Z","status":204}
+{"request_id":"r4","timestamp":"2026-05-04T10:15:00.123Z","status":404}
+{"request_id":"r5","timestamp":"2026-05-04T10:16:00Z","status":500}
