@@ -1,0 +1,23 @@
+name: Verify cache placement and transfers
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: go vet ./...
+      - run: go test -v ./...
+      - run: go build -o replica-map.exe ./cmd/replica-map
+      - run: python reference_check.py replica-map.exe
