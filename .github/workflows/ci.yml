@@ -15,4 +15,20 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npx playwright install --with-deps chromium
+      - name: Check out the tested log producer
+        uses: actions/checkout@v4
+        with:
+          repository: peca12968/access-log-rollup
+          ref: e5ad3b15e8d2cf7ee425b2d68e4c7ea0c3681b25
+          path: producer
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Convert checkout logs into browser input
+        run: |
+          dotnet build producer/src -c Release
+          dotnet producer/src/bin/Release/net10.0/access-rollup.dll producer/examples/checkout.ndjson > "$RUNNER_TEMP/checkout.csv"
       - run: npm run test:e2e
+        env:
+          CHECKOUT_ROLLUP_CSV: ${{ runner.temp }}/checkout.csv

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 test("changes target, imports a file, and preserves the last good report after a bad file", async ({
   page,
@@ -24,4 +25,20 @@ test("changes target, imports a file, and preserves the last good report after a
   });
   await expect(page.getByRole("alert")).toContainText("第一列");
   await expect(page.getByText("checkout.csv")).toBeVisible();
+});
+
+test("presents UTC rollup counts and preserves gaps in the observation window", async ({ page }) => {
+  // CI supplies the C# producer's actual output. Local UI-only runs use its published example.
+  const csv = process.env.CHECKOUT_ROLLUP_CSV
+    ? readFileSync(process.env.CHECKOUT_ROLLUP_CSV)
+    : Buffer.from("date,requests,errors\n2026-05-01,2,1\n2026-05-02,1,0\n2026-05-04,2,1\n");
+  await page.goto("/");
+  await page.getByLabel("選擇 CSV 檔案").setInputFiles({
+    name: "checkout.csv", mimeType: "text/csv", buffer: csv,
+  });
+  await expect(page.getByText("60.000%", { exact: true })).toBeVisible();
+  await expect(page.getByText("未達標 · 資料涵蓋 3/14 天")).toBeVisible();
+  await expect(page.getByText("共 5 筆請求")).toBeVisible();
+  await page.getByText("查看逐日數值").click();
+  await expect(page.getByRole("row").filter({ hasText: "2026-05-03" })).toContainText("缺資料");
 });
