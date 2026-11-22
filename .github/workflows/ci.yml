@@ -1,0 +1,34 @@
+name: Verify durable jobs
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  database:
+    strategy:
+      matrix:
+        postgres: ['16', '17']
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: relay
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 3s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:ci-only@127.0.0.1:5432/relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Exercise CLI from enqueue to result
+        run: |
+          node cli.js init
+          id=$(node cli.js enqueue "queue integration demo")
+          node cli.js work --once
+          node cli.js show "$id" | node --input-type=commonjs -e "const j=JSON.parse(require('node:fs').readFileSync(0)); if(j.state!=='done' || j.result.words!==3) process.exit(1)"
