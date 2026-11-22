@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 
-def generate():
+def generate(batch=False):
     providers = []
     memory = InMemorySpanExporter()
 
@@ -28,6 +28,16 @@ def generate():
     start = 1_760_000_000_000_000_000
     ms = 1_000_000
     try:
+        if batch:
+            producer = tracer("publisher")
+            a = producer.start_span("enqueue A", start_time=start)
+            b = producer.start_span("enqueue B", start_time=start + 10 * ms)
+            a.end(end_time=start + 20 * ms)
+            b.end(end_time=start + 45 * ms)
+            links = [trace.Link(span.get_span_context()) for span in (a, b)]
+            flush = tracer("worker").start_span("flush batch", start_time=start + 60 * ms, links=links)
+            flush.end(end_time=start + 90 * ms)
+            return memory.get_finished_spans()
         root = tracer("checkout").start_span("checkout", start_time=start)
         headers = {}
         propagator = TraceContextTextMapPropagator()
@@ -48,7 +58,7 @@ def generate():
             provider.shutdown()
 
 
-def capture(directory):
+def capture(directory, batch=False):
     bodies = []
 
     class Receiver(BaseHTTPRequestHandler):
@@ -65,7 +75,13 @@ def capture(directory):
         def log_message(self, *args):
             pass
 
-    spans = generate()
+    spans = generate(batch)
+    if batch:
+        groups = [[span] for span in spans]
+        names = ("enqueue-a.otlp", "enqueue-b.otlp", "batch.otlp")
+    else:
+        groups = [[s for s in spans if s.parent is None], [s for s in spans if s.parent is not None]]
+        names = ("checkout.otlp", "services.otlp")
     with HTTPServer(("127.0.0.1", 0), Receiver) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -74,7 +90,7 @@ def capture(directory):
                                         compression=Compression.NoCompression, timeout=3)
             try:
                 # Root and downstream services can export in separate batches.
-                for group in ([s for s in spans if s.parent is None], [s for s in spans if s.parent is not None]):
+                for group in groups:
                     if exporter.export(group) != SpanExportResult.SUCCESS:
                         raise RuntimeError("loopback OTLP export failed")
             finally:
@@ -82,14 +98,16 @@ def capture(directory):
         finally:
             server.shutdown()
             thread.join()
-    if len(bodies) != 2:
-        raise RuntimeError("expected two OTLP request bodies")
+    if len(bodies) != len(groups):
+        raise RuntimeError("missing OTLP request bodies")
     directory.mkdir(parents=True, exist_ok=True)
-    for name, body in zip(("checkout.otlp", "services.otlp"), bodies, strict=True):
+    for name, body in zip(names, bodies, strict=True):
         (directory / name).write_bytes(body)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
-    capture(parser.parse_args().directory)
+    parser.add_argument("--batch", action="store_true", help="generate two producers and a linked batch consumer")
+    args = parser.parse_args()
+    capture(args.directory, args.batch)

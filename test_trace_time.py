@@ -72,6 +72,42 @@ class TraceTests(unittest.TestCase):
         self.assertEqual(stock["parent_span_id"], pay["parent_span_id"])
         self.assertEqual(pay["span_id"], bank["parent_span_id"])
 
+    def test_linked_batch_resolves_two_roots_and_keeps_partial_evidence(self):
+        capture(self.path, batch=True)
+        a, b, batch = (self.path / name for name in ("enqueue-a.otlp", "enqueue-b.otlp", "batch.otlp"))
+        report = self.cli("--links", batch, b, a)
+        self.assertEqual(report, self.cli("--links", a, b, batch))
+        retry = self.cli("--links", batch, a, batch, b)
+        self.assertEqual((retry["duplicate_spans"], retry["links"]), (1, report["links"]))
+        self.assertEqual(report["traces"], self.cli(a, b, batch)["traces"])
+        self.assertTrue(all(len(t["root_ids"]) == 1 and t["spans"][0]["covered_ns"] == 0 for t in report["traces"]))
+        edges = report["links"]["edges"]
+        self.assertEqual(sorted((e["linked_name"], e["start_minus_linked_end_ns"]) for e in edges),
+                         [("enqueue A", 40_000_000), ("enqueue B", 15_000_000)])
+        self.assertTrue(all(e["state"] == "resolved" and e["name"] == "flush batch" for e in edges))
+        partial = self.cli("--links", a, batch)["links"]["edges"]
+        self.assertEqual(sorted(e["state"] for e in partial), ["missing", "resolved"])
+        missing, = [e for e in partial if e["state"] == "missing"]
+        self.assertIsNone(missing["start_minus_linked_end_ns"])
+
+    def test_link_multiplicity_dropped_and_unaddressable_context(self):
+        path = self.batch("input", [(1, 1, 0, 0, 20), (2, 1, 0, 3, 18)])
+        request = ExportTraceServiceRequest.FromString(path.read_bytes())
+        src, target = request.resource_spans[0].scope_spans[0].spans
+        for _ in range(2):
+            src.links.add(trace_id=target.trace_id, span_id=target.span_id)
+        src.links.add().attributes.add(key="note").value.string_value = "context only"
+        src.dropped_links_count = 3
+        path.write_bytes(request.SerializeToString())
+        report = self.cli("--links", path)["links"]
+        self.assertEqual(report["dropped_links"], 3)
+        self.assertEqual([(e["state"], e["count"], e["start_minus_linked_end_ns"]) for e in report["edges"]],
+                         [("unaddressable", 1, None), ("resolved", 2, -18)])
+        src.links.pop()
+        conflict = self.path / "conflict"
+        conflict.write_bytes(request.SerializeToString())
+        self.assertIn(b"conflicting span", self.cli("--links", path, conflict, success=False))
+
     def test_trace_id_scopes_span_id_and_parent_lookup(self):
         batch = self.batch("mixed", [(2, 1, 0, 20, 23), (1, 1, 0, 10, 20), (1, 2, 1, 12, 17)])
         first, second = self.cli(batch)["traces"]

@@ -1,7 +1,7 @@
 """Summarize direct child coverage from binary OTLP trace export requests."""
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -19,6 +19,8 @@ class Span:
     name: str
     start: int
     end: int
+    links: tuple[tuple[str, str], ...] = ()
+    dropped_links: int = 0
 
 
 def identifier(raw, size, label):
@@ -43,7 +45,9 @@ def read_batches(paths):
                         parent = identifier(raw.parent_span_id, 8, "parent_span_id") if raw.parent_span_id else None
                         if raw.end_time_unix_nano < raw.start_time_unix_nano:
                             raise ValueError(f"span {key} ends before it starts")
-                        span = Span(key, parent, service, raw.name, raw.start_time_unix_nano, raw.end_time_unix_nano)
+                        links = tuple(sorted((link.trace_id.hex(), link.span_id.hex()) for link in raw.links))
+                        span = Span(key, parent, service, raw.name, raw.start_time_unix_nano,
+                                    raw.end_time_unix_nano, links, raw.dropped_links_count)
                         previous = traces[trace].get(key)
                         if previous is None:
                             traces[trace][key] = span
@@ -115,9 +119,28 @@ def summarize(trace, spans):
     return {"trace_id": trace, "root_ids": sorted(roots), "missing_parent_ids": sorted(missing), "spans": rows}
 
 
+def link_report(traces):
+    edges = []
+    dropped = 0
+    for trace, spans in sorted(traces.items()):
+        for source in sorted(spans.values(), key=lambda span: span.id):
+            dropped += source.dropped_links
+            for (tid, sid), count in sorted(Counter(source.links).items()):
+                target = traces.get(tid, {}).get(sid)
+                state = "resolved" if target else "missing"
+                if len(tid) != 32 or len(sid) != 16 or not int(tid, 16) or not int(sid, 16):
+                    state = "unaddressable"
+                edges.append({"trace_id": trace, "span_id": source.id, "name": source.name,
+                              "linked_trace_id": tid, "linked_span_id": sid, "count": count, "state": state,
+                              "linked_name": target.name if target else None,
+                              "start_minus_linked_end_ns": source.start - target.end if target else None})
+    return {"edges": edges, "dropped_links": dropped}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batches", type=Path, nargs="+", help="uncompressed binary OTLP export request bodies")
+    parser.add_argument("--links", action="store_true", help="resolve span links across the supplied batches")
     args = parser.parse_args()
     try:
         traces, duplicates = read_batches(args.batches)
@@ -125,7 +148,10 @@ def main():
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
-    print(json.dumps({"duplicate_spans": duplicates, "traces": reports}, indent=2))
+    result = {"duplicate_spans": duplicates, "traces": reports}
+    if args.links:
+        result["links"] = link_report(traces)
+    print(json.dumps(result, indent=2))
     return 0
 
 

@@ -17,3 +17,4 @@ jobs:
       - run: python -m pip install -r requirements-test.txt
       - run: python -m unittest -v
       - run: python trace_time.py examples/checkout.otlp examples/services.otlp
+      - run: python trace_time.py --links examples/batch.otlp examples/enqueue-a.otlp examples/enqueue-b.otlp

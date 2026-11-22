@@ -35,7 +35,7 @@ python trace_time.py examples/checkout.otlp examples/services.otlp
 
 ## 分批匯出、重送與資料缺口
 
-同一次追蹤可跨多個輸入檔。任意調換範例的輸入順序會得到相同報表。再傳一次 `examples/services.otlp`，會顯示 `duplicate_spans: 3`，時間數字保持相同。重送比對使用 trace ID、span ID 及分析所需的父 ID、服務名、作業名與時間欄位。
+同一次追蹤可跨多個輸入檔。任意調換範例的輸入順序會得到相同報表。再傳一次 `examples/services.otlp`，會顯示 `duplicate_spans: 3`，時間數字保持相同。重送比對使用 trace ID、span ID、父 ID、服務名、作業名、時間、連結目標及 SDK 回報的丟棄連結數。連結屬性與排列順序不參與比較。
 
 只分析下游檔案時，`missing_parent_ids` 會列出缺少的結帳 span，仍可分析付款與銀行之間的關係。沒有缺少父 ID 的紀錄也可能漏掉尚未擷取的子作業。遇到同一 span 的分析欄位衝突、倒置時間、無效 ID 或父子循環時，CLI 以結束碼 2 結束，完整報表才會寫入 stdout。
 
@@ -43,16 +43,31 @@ python trace_time.py examples/checkout.otlp examples/services.otlp
 
 ## 用 SDK 重新產生資料
 
+### 查詢批次工作來自哪些追蹤
+
+兩個生產者各自排入一件工作，另一條獨立追蹤稍後把它們合併處理。`flush batch` 在 OpenTelemetry span links 中記錄兩個來源的 trace ID 與 span ID。以三個實際 OTLP/HTTP 匯出檔重現：
+
+```sh
+python trace_time.py --links examples/batch.otlp examples/enqueue-b.otlp examples/enqueue-a.otlp
+```
+
+報告顯示批次開始時，距離 A 結束已過 40 毫秒、距離 B 結束已過 15 毫秒。三條追蹤各有自己的根作業；連結不會增加子作業覆蓋時間。移除 B 的檔案重跑，該連結仍保留原始目標 ID，狀態為 `missing`，時間差為 null。[OpenTelemetry 連結規格](https://opentelemetry.io/docs/specs/otel/trace/api/#link)
+
+同一來源多次連向同一目標時，`count` 保存連結次數；重送整個批次只會增加 `duplicate_spans`。缺少完整有效目標識別碼時，狀態為 `unaddressable`。`dropped_links` 加總各唯一 span 回報的捨棄數。時間差依原始時間戳計算，跨主機時鐘偏差或作業交錯都可能產生負值。
+
+### 重新錄製
+
 ```sh
 python -m pip install -r requirements-test.txt
 python examples/capture.py build
+python examples/capture.py build --batch
 python trace_time.py build/checkout.otlp build/services.otlp
 python -m unittest -v
 ```
 
 產生器以 W3C Trace Context 把結帳的上游資訊傳給庫存與付款，並用官方 Python SDK 將追蹤送至本機臨時 HTTP 接收端。示範時間固定，重新產生時會取得新的 trace 與 span ID。[產生器](examples/capture.py)
 
-六項測試涵蓋實際 HTTP 匯出、不同收件順序與重送、跨 trace 的相同 span ID、缺漏父作業、無效報文及非同步子作業超出父區間。另以固定種子產生 500 組時間軸，逐奈秒計數，獨立核對所有時間指標。[測試](test_trace_time.py) · [CI](.github/workflows/ci.yml)
+八項測試涵蓋實際 HTTP 匯出、不同收件順序與重送、跨 trace 的相同 span ID、連結解析、缺漏父作業、無效報文及非同步子作業超出父區間。另以固定種子產生 500 組時間軸，逐奈秒計數，獨立核對所有時間指標。[測試](test_trace_time.py) · [CI](.github/workflows/ci.yml)
 
 **履歷用語**　以 Python、OTLP Protobuf 與區間掃描分析跨服務追蹤，從分批及重送資料還原並行呼叫的時間覆蓋，透過官方 SDK 匯出與 500 組時間軸驗證重疊計算。
 
