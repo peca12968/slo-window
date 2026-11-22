@@ -1,8 +1,11 @@
 import {after, before, beforeEach, test} from "node:test";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
+import {once} from "node:events";
+import {setTimeout as delay} from "node:timers/promises";
 import pg from "pg";
-import {initialize, enqueue, claim, complete, fail, inspect} from "../queue.js";
+import {initialize, enqueue, claim, complete, fail, inspect, renew} from "../queue.js";
+import {workOne} from "../worker.js";
 
 const schema = "relay_test_" + randomUUID().replaceAll("-", "");
 const connectionString = process.env.DATABASE_URL;
@@ -144,5 +147,117 @@ test("a client reconnect observes committed results", async () => {
     assert.equal((await inspect(fresh, id)).result.words, 1);
   } finally {
     await fresh.end();
+  }
+});
+
+test("renew extends from database time without shortening or banking unused lease time", async () => {
+  const id = await enqueue(db, "long job");
+  const job = await claim(db, 10_000);
+  assert.equal(+(await renew(db, job, 100)), +job.lease_until);
+  const extended = await renew(db, job, 60_000);
+  assert.ok(extended > job.lease_until);
+  const repeated = await renew(db, job, 60_000);
+  const now = (await db.query("SELECT clock_timestamp() AS t")).rows[0].t;
+  assert.ok(repeated >= extended && +repeated <= +now + 60_000);
+  assert.equal((await inspect(db, id)).attempts, 1);
+  await assert.rejects(renew(db, job, 0), /lease/);
+  assert.equal(await complete(db, job, {ok:true}), true);
+  assert.equal(await renew(db, job), null);
+});
+
+test("renew, complete and fail recheck expiry after waiting on an unchanged locked row", async () => {
+  const jobs = [];
+  for (const text of ["renew", "complete", "fail"]) {
+    await enqueue(db, text);
+    jobs.push(await claim(db));
+  }
+  const locker = await db.connect();
+  let operations;
+  try {
+    await db.query("UPDATE relay_jobs SET lease_until=clock_timestamp()+interval '1.5 seconds'");
+    await locker.query("BEGIN");
+    await locker.query("SELECT id FROM relay_jobs FOR UPDATE");
+    operations = Promise.all([renew(db, jobs[0]), complete(db, jobs[1], {}), fail(db, jobs[2], "old")]);
+    // Check that each real backend started before expiry and is blocked by this transaction.
+    let blocked = 0;
+    const timeout = Date.now() + 3000;
+    while (blocked !== 3 && Date.now() < timeout) {
+      const {rows} = await db.query(`SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE $1=ANY(pg_blocking_pids(pid)) AND query_start < (SELECT MIN(lease_until) FROM relay_jobs)`,
+        [locker.processID]);
+      blocked = rows[0].n;
+      if (blocked !== 3) await delay(10);
+    }
+    assert.equal(blocked, 3);
+    await locker.query(`SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM MAX(lease_until)-clock_timestamp())) + 0.02)
+                        FROM relay_jobs`);
+  } finally {
+    await locker.query("ROLLBACK");
+    locker.release();
+  }
+  assert.deepEqual(await operations, [null, false, null]);
+  for (const job of jobs) assert.equal((await inspect(db, job.id)).state, "running");
+});
+
+test("a slow handler keeps attempt one beyond its original deadline", async () => {
+  const id = await enqueue(db, "slow work", 1);
+  const outcome = await workOne(db, async (job, signal) => {
+    await db.query(`SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM $1::timestamptz-clock_timestamp())) + 0.1)`,
+                   [job.lease_until]);
+    const current = await inspect(db, id);
+    assert.ok(current.lease_until > job.lease_until);
+    assert.equal(await claim(db), null);
+    assert.equal(signal.aborted, false);
+    return {attempt:job.attempts};
+  }, {leaseMs:1500, heartbeatMs:100});
+  assert.deepEqual(outcome, {id, status:"done"});
+  const final = await inspect(db, id);
+  assert.deepEqual([final.state, final.attempts, final.result], ["done", 1, {attempt:1}]);
+});
+
+test("after takeover the old handler receives an abort and its output cannot replace the winner", async () => {
+  const id = await enqueue(db, "handoff");
+  const outcome = await workOne(db, async (job, signal) => {
+    await expire(id);
+    const next = await claim(db);
+    assert.equal(next.attempts, 2);
+    assert.equal(await renew(db, job), null);
+    assert.ok(await renew(db, next));
+    if (!signal.aborted) await once(signal, "abort", {signal:AbortSignal.timeout(4000)});
+    assert.equal(await complete(db, next, {worker:"replacement"}), true);
+    return {worker:"old"};
+  }, {leaseMs:2000, heartbeatMs:50});
+  assert.deepEqual(outcome, {id, status:"lease_lost"});
+  assert.deepEqual((await inspect(db, id)).result, {worker:"replacement"});
+});
+
+test("worker preserves idle, retry and terminal failure outcomes", async () => {
+  await assert.rejects(workOne(db, () => {}, {leaseMs:20, heartbeatMs:20}), /heartbeat/);
+  assert.equal(await workOne(db, () => "nothing"), null);
+  const id = await enqueue(db, "bad input", 2);
+  const handler = () => { throw new Error("cannot process"); };
+  assert.deepEqual(await workOne(db, handler), {id, status:"ready"});
+  await db.query("UPDATE relay_jobs SET available_at=clock_timestamp() WHERE id=$1", [id]);
+  assert.deepEqual(await workOne(db, handler), {id, status:"dead"});
+  assert.equal((await inspect(db, id)).last_error, "cannot process");
+});
+
+test("a database error during renewal aborts the handler without publishing a result", async () => {
+  const id = await enqueue(db, "connection problem");
+  const client = await db.connect();
+  try {
+    await assert.rejects(workOne(client, async (_job, signal) => {
+      // Only this connection loses access to the queue. The inspection pool still sees it.
+      await client.query("SET search_path TO pg_catalog");
+      if (!signal.aborted) await once(signal, "abort", {signal:AbortSignal.timeout(4000)});
+      return {unconfirmed:true};
+    }, {leaseMs:2000, heartbeatMs:100}), {code:"42P01"});
+    const row = await inspect(db, id);
+    assert.equal(row.state, "running");
+    assert.equal(row.result, null);
+    await expire(id);
+    assert.equal((await claim(db)).attempts, 2);
+  } finally {
+    client.release(true);
   }
 });

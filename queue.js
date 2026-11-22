@@ -29,9 +29,13 @@ export async function enqueue(db, text, maxAttempts = 3, requestKey = null) {
   return existing.id;
 }
 
-export async function claim(db, leaseMs = 30_000) {
+function validateLease(leaseMs) {
   if (!Number.isInteger(leaseMs) || leaseMs < 1 || leaseMs > 3_600_000)
     throw new Error("Expected a lease of 1 to 3600000 milliseconds");
+}
+
+export async function claim(db, leaseMs = 30_000) {
+  validateLease(leaseMs);
   // A final attempt can crash without reporting failure. Reap expired terminal leases in batches.
   await db.query(`
     WITH exhausted AS (
@@ -57,23 +61,40 @@ export async function claim(db, leaseMs = 30_000) {
   return rows[0] ?? null;
 }
 
-const owned = "id=$1 AND lease_token=$2 AND state='running' AND lease_until>clock_timestamp()";
+// The row lock may wait without the row changing. Sample the database clock
+// after the lock is acquired so a request queued before expiry cannot revive it.
+const checkOwner = `WITH locked AS MATERIALIZED (
+  SELECT id, lease_until FROM relay_jobs
+  WHERE id=$1 AND lease_token=$2 AND state='running' FOR UPDATE
+), owner AS MATERIALIZED (
+  SELECT id, lease_until, clock_timestamp() AS checked_at FROM locked
+)`;
+const owned = "FROM owner WHERE j.id=owner.id AND owner.lease_until>owner.checked_at";
+
+export async function renew(db, job, leaseMs = 30_000) {
+  validateLease(leaseMs);
+  const {rows} = await db.query(`${checkOwner}
+    UPDATE relay_jobs j
+    SET lease_until=GREATEST(owner.lease_until, owner.checked_at + $3::integer * interval '1 millisecond')
+    ${owned} RETURNING j.lease_until`, [job.id, job.lease_token, leaseMs]);
+  return rows[0]?.lease_until ?? null;
+}
 
 export async function complete(db, job, result) {
-  const update = await db.query(`
-    UPDATE relay_jobs SET state='done', result=$3::jsonb, lease_token=NULL, lease_until=NULL,
+  const update = await db.query(`${checkOwner}
+    UPDATE relay_jobs j SET state='done', result=$3::jsonb, lease_token=NULL, lease_until=NULL,
                           last_error=NULL
-    WHERE ${owned}`, [job.id, job.lease_token, JSON.stringify(result)]);
+    ${owned}`, [job.id, job.lease_token, JSON.stringify(result)]);
   return update.rowCount === 1;
 }
 
 export async function fail(db, job, message) {
-  const {rows} = await db.query(`
-    UPDATE relay_jobs
+  const {rows} = await db.query(`${checkOwner}
+    UPDATE relay_jobs j
     SET state=CASE WHEN attempts=max_attempts THEN 'dead' ELSE 'ready' END,
         available_at=clock_timestamp() + (1 << (attempts-1)) * interval '1 second',
         lease_token=NULL, lease_until=NULL, last_error=$3
-    WHERE ${owned} RETURNING state`, [job.id, job.lease_token, String(message).slice(0, 1000)]);
+    ${owned} RETURNING state`, [job.id, job.lease_token, String(message).slice(0, 1000)]);
   return rows[0]?.state ?? null;
 }
 

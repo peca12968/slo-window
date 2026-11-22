@@ -1,6 +1,7 @@
 import {setTimeout as delay} from "node:timers/promises";
 import pg from "pg";
-import {initialize, enqueue, claim, complete, inspect} from "./queue.js";
+import {initialize, enqueue, inspect} from "./queue.js";
+import {workOne} from "./worker.js";
 
 const usage = "node cli.js init | enqueue TEXT [--key KEY] | show UUID | work [--once]";
 const [command, ...args] = process.argv.slice(2);
@@ -27,12 +28,12 @@ async function run(db) {
     throw new Error(usage);
   const once = args[0] === "--once";
   do {
-    const job = await claim(db);
-    if (job) {
+    const outcome = await workOne(db, job => {
       const text = job.payload.trim();
-      const result = {words: text ? text.split(/\s+/u).length : 0, utf8_bytes: Buffer.byteLength(job.payload)};
-      const saved = await complete(db, job, result);
-      console.log(JSON.stringify({id: job.id, status: saved ? "done" : "lease_lost"}));
+      return {words: text ? text.split(/\s+/u).length : 0, utf8_bytes: Buffer.byteLength(job.payload)};
+    });
+    if (outcome) {
+      console.log(JSON.stringify(outcome));
     } else if (!once && !stopping) {
       await delay(500);
     }
@@ -43,7 +44,8 @@ if (!process.env.DATABASE_URL) {
   console.error("Set DATABASE_URL to the PostgreSQL connection string.");
   process.exitCode = 2;
 } else {
-  const db = new pg.Pool({connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000});
+  const db = new pg.Pool({connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000,
+                          statement_timeout: 5000});
   try {
     await run(db);
   } catch (error) {
