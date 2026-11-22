@@ -8,7 +8,8 @@ internal static class Program
 {
     private const long MaxDailyCount = 999_999_999_999; // SLO Window input limit
 
-    private readonly record struct ObservedRequest(DateTimeOffset Instant, int Status, string Source, long Line);
+    private readonly record struct ObservedRequest(DateTimeOffset Instant, int Status,
+        (string Shard, long Milliseconds)? Latency, string Source, long Line);
 
     public static int Main(string[] args)
     {
@@ -16,10 +17,18 @@ internal static class Program
         {
             Console.WriteLine("access-rollup [--dedupe] [FILE|- ...]   Read NDJSON and write daily SLO CSV to stdout.");
             Console.WriteLine("--dedupe requires request_id on every record and rejects conflicting observations.");
+            Console.WriteLine("access-rollup [--dedupe] --histogram CONFIG [FILE|- ...]   Write cumulative latency buckets.");
             return 0;
         }
         bool dedupe = args.Length > 0 && args[0] == "--dedupe";
         string[] sources = dedupe ? args[1..] : args;
+        string? config = null;
+        if (sources.Length > 0 && sources[0] == "--histogram")
+        {
+            if (sources.Length < 2) { Console.Error.WriteLine("--histogram requires a config file."); return 2; }
+            config = sources[1];
+            sources = sources[2..];
+        }
         if (sources.Length == 0) sources = ["-"];
         if (sources.Count(s => s == "-") > 1)
         {
@@ -29,6 +38,7 @@ internal static class Program
         try
         {
             var counts = new SortedDictionary<DateOnly, (long Requests, long Errors)>();
+            var histogram = config is null ? null : new LatencyHistogram(config);
             Dictionary<string, ObservedRequest>? seen = dedupe ? new(StringComparer.Ordinal) : null;
             foreach (var source in sources)
             {
@@ -36,12 +46,17 @@ internal static class Program
                 using var reader = new StreamReader(input, new UTF8Encoding(false, true), false);
                 try
                 {
-                    Aggregate(reader, source == "-" ? "<stdin>" : source, counts, seen);
+                    Aggregate(reader, source == "-" ? "<stdin>" : source, counts, seen, histogram);
                 }
                 catch (DecoderFallbackException ex)
                 {
                     throw new InvalidDataException($"{source}: invalid UTF-8", ex);
                 }
+            }
+            if (histogram is not null)
+            {
+                histogram.Write(Console.Out);
+                return 0;
             }
             if (counts.Count == 0) throw new InvalidDataException("Input contains no request records.");
             Console.WriteLine("date,requests,errors");
@@ -50,7 +65,7 @@ internal static class Program
             return 0;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                      or InvalidDataException or ArgumentException)
+                                      or InvalidDataException or ArgumentException or JsonException or OverflowException)
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
@@ -59,10 +74,10 @@ internal static class Program
 
     private static void Aggregate(TextReader input, string source,
                                   SortedDictionary<DateOnly, (long Requests, long Errors)> counts,
-                                  Dictionary<string, ObservedRequest>? seen)
+                                  Dictionary<string, ObservedRequest>? seen, LatencyHistogram? histogram)
     {
         long number = 0;
-        var options = new JsonDocumentOptions { AllowDuplicateProperties = seen is null };
+        var options = new JsonDocumentOptions { AllowDuplicateProperties = seen is null && histogram is null };
         while (input.ReadLine() is { } line)
         {
             number++;
@@ -82,8 +97,14 @@ internal static class Program
                 if (status.ValueKind != JsonValueKind.Number ||
                     !status.TryGetInt32(out var code) || code is < 100 or > 599)
                     throw new FormatException("status must be an integer between 100 and 599");
-                if (seen is not null && IsRepeat(root, seen, new(instant, code, source, number)))
+                var latency = histogram?.Read(root, instant);
+                if (seen is not null && IsRepeat(root, seen, new(instant, code, latency, source, number)))
                     continue;
+                if (latency is { } sample)
+                {
+                    histogram!.Add(sample);
+                    continue;
+                }
                 var date = DateOnly.FromDateTime(instant.UtcDateTime);
                 var day = counts.GetValueOrDefault(date);
                 if (day.Requests >= MaxDailyCount || (day.Requests == 0 && counts.Count == 3660))
@@ -105,7 +126,7 @@ internal static class Program
             throw new FormatException("request_id must be 1 to 128 ASCII letters, digits or -_.:");
         if (seen.TryAdd(id, record)) return false;
         var previous = seen[id];
-        if (previous.Instant != record.Instant || previous.Status != record.Status)
+        if (previous.Instant != record.Instant || previous.Status != record.Status || previous.Latency != record.Latency)
             throw new FormatException($"conflicting request_id '{id}', first seen at {previous.Source}: Line {previous.Line}");
         return true;
     }

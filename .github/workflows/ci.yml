@@ -18,3 +18,10 @@ jobs:
           python-version: '3.12'
       - run: dotnet build src -c Release
       - run: python -m unittest -v
+      - uses: actions/checkout@v4
+        with:
+          repository: peca12968/bucket-verdict
+          ref: 45fe432d87d451e8865a6fc639e320fdd3ae7502
+          path: consumer
+          persist-credentials: false
+      - run: python latency_demo.py consumer/verdict.py

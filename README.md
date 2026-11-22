@@ -2,6 +2,18 @@
 
 把每行一筆 JSON 的 HTTP 請求日誌轉成 [SLO Window](https://github.com/peca12968/slo-window) 可直接匯入的 CSV。適合在面試時從原始請求一路展示到錯誤預算。C# / .NET 10，無第三方套件。
 
+## 從輪替日誌取得延遲分桶
+
+`--histogram` 依指定的 UTC 日期與各 shard 的分桶邊界，輸出 Bucket Verdict 可直接讀取的累積 CSV。日誌須含原有的時間戳、狀態碼，以及 `shard`、非負整數 `duration_ms`。可在前方加上 `--dedupe`，以請求 ID 排除重疊的輪替日誌。同一 ID 若有相異延遲或 shard，程式會指出兩筆紀錄的位置。日期落在指定 UTC 日之外會回報錯誤。空輸入只代表此批日誌內沒有請求，無法據此判定服務是否有流量。
+
+```sh
+dotnet build src -c Release
+git clone https://github.com/peca12968/bucket-verdict.git ../bucket-verdict
+python latency_demo.py ../bucket-verdict/verdict.py
+```
+
+演練產生兩組各 23 行的輪替日誌，分別去重成 20 筆。第一組有 17 筆在 120 毫秒內完成，P90 為 151 毫秒。第二組只有 10 筆，P90 為 300 毫秒。兩組輸出的 CSV 逐位元組一致，能直接說明分桶保留了哪些判定能力。CI 以固定提交的下游工具重新計算兩端。[分桶設定](examples/latency.json) · [跨專案驗證](latency_demo.py)
+
 ## 跑一次並看結果
 
 ```sh
