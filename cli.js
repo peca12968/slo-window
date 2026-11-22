@@ -1,9 +1,9 @@
 import {setTimeout as delay} from "node:timers/promises";
 import pg from "pg";
-import {initialize, enqueue, inspect} from "./queue.js";
+import {initialize, enqueue, inspect, listDead, redrive} from "./queue.js";
 import {workOne} from "./worker.js";
 
-const usage = "node cli.js init | enqueue TEXT [--key KEY] | show UUID | work [--once]";
+const usage = "node cli.js init | enqueue TEXT [--key KEY] | show UUID | dead [AFTER_UUID] | redrive UUID --cycle N | work [--once]";
 const [command, ...args] = process.argv.slice(2);
 let stopping = false;
 process.on("SIGINT", () => { stopping = true; });
@@ -22,6 +22,14 @@ async function run(db) {
     const job = await inspect(db, args[0]);
     if (!job) throw new Error("Unknown job");
     console.log(JSON.stringify(job));
+    return;
+  }
+  if (command === "dead" && args.length <= 1) {
+    console.log(JSON.stringify(await listDead(db, args[0])));
+    return;
+  }
+  if (command === "redrive" && args.length === 3 && args[1] === "--cycle" && /^[1-9][0-9]*$/.test(args[2])) {
+    console.log(JSON.stringify(await redrive(db, args[0], Number(args[2]))));
     return;
   }
   if (command !== "work" || (args.length && !(args.length === 1 && args[0] === "--once")))

@@ -2,9 +2,12 @@ import {after, before, beforeEach, test} from "node:test";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import {once} from "node:events";
+import {execFile} from "node:child_process";
+import {promisify} from "node:util";
+import {fileURLToPath} from "node:url";
 import {setTimeout as delay} from "node:timers/promises";
 import pg from "pg";
-import {initialize, enqueue, claim, complete, fail, inspect, renew} from "../queue.js";
+import {initialize, enqueue, claim, complete, fail, inspect, renew, listDead, redrive} from "../queue.js";
 import {workOne} from "../worker.js";
 
 const schema = "relay_test_" + randomUUID().replaceAll("-", "");
@@ -18,7 +21,7 @@ before(async () => {
   await initialize(db);
 });
 beforeEach(async () => {
-  await db.query("TRUNCATE " + schema + ".relay_jobs");
+  await db.query("TRUNCATE " + schema + ".relay_redrives, " + schema + ".relay_jobs");
 });
 after(async () => {
   await db.end();
@@ -61,12 +64,15 @@ test("independent submissions and invalid keys retain distinct semantics", async
 test("initialization upgrades a legacy job without making it a keyed submission", async () => {
   // This schema belongs only to this test suite.
   await db.query("ALTER TABLE relay_jobs DROP COLUMN request_key");
+  await db.query("DROP TABLE relay_redrives");
+  await db.query("ALTER TABLE relay_jobs DROP COLUMN run_cycle");
   const id = randomUUID();
   await db.query("INSERT INTO relay_jobs(id,payload,max_attempts) VALUES ($1,'legacy',3)", [id]);
   await initialize(db);
   await initialize(db);
   const legacy = await claim(db);
   assert.equal(legacy.id, id);
+  assert.equal((await inspect(db, id)).run_cycle, 1);
   const keyed = await enqueue(db, "legacy", 3, "import");
   assert.notEqual(keyed, id);
   assert.equal(await enqueue(db, "legacy", 3, "import"), keyed);
@@ -92,6 +98,88 @@ test("a locked candidate does not stall another worker", async () => {
     owner.release();
   }
   assert.equal((await claim(db)).id, busy);
+});
+
+test("concurrent redrives restore one attempt budget and replay even after another dead cycle", async () => {
+  const id = await enqueue(db, "weekly digest", 1, "digest-31");
+  await assert.rejects(redrive(db, id, 1), /No dead job/);
+  const old = await claim(db);
+  await assert.rejects(redrive(db, id, 1), /No dead job/);
+  assert.equal(await fail(db, old, "mailbox offline"), "dead");
+  const receipts = await Promise.all(Array.from({length:12}, () => redrive(db, id, 1)));
+  assert.ok(receipts.every(receipt => JSON.stringify(receipt) === JSON.stringify(receipts[0])));
+  assert.equal(receipts[0].last_error, "mailbox offline");
+  assert.equal(receipts[0].attempts, 1);
+  assert.equal((await inspect(db, id)).attempts, 0);
+  const leases = (await Promise.all(Array.from({length:8}, () => claim(db)))).filter(Boolean);
+  assert.equal(leases.length, 1);
+  assert.equal(leases[0].id, id);
+  assert.equal(leases[0].attempts, 1);
+  assert.equal(await complete(db, old, {late:true}), false);
+  assert.equal(await fail(db, leases[0], "disk full"), "dead");
+  assert.deepEqual(await redrive(db, id, 1), receipts[0]);
+  const waiting = await listDead(db);
+  assert.deepEqual(waiting, [{id, run_cycle:2, attempts:1, last_error:"disk full"}]);
+  const next = await redrive(db, id, 2);
+  assert.equal(next.last_error, "disk full");
+  const final = await claim(db);
+  assert.equal(await complete(db, final, {ok:true}), true);
+  assert.deepEqual(await redrive(db, id, 2), next);
+  assert.equal(await enqueue(db, "weekly digest", 1, "digest-31"), id);
+  const saved = await inspect(db, id);
+  assert.deepEqual([saved.run_cycle, saved.state, saved.result], [3, "done", {ok:true}]);
+  assert.equal((await db.query("SELECT * FROM relay_redrives WHERE job_id=$1", [id])).rowCount, 2);
+});
+
+test("operator CLI lists a final expired lease then redrives and completes the original job", async () => {
+  const url = new URL(connectionString);
+  url.searchParams.set("options", "-c search_path=" + schema);
+  const cli = async (...args) => {
+    const file = fileURLToPath(new URL("../cli.js", import.meta.url));
+    const {stdout} = await promisify(execFile)(process.execPath, [file, ...args],
+      {env:{...process.env, DATABASE_URL:url.href}});
+    return JSON.parse(stdout);
+  };
+  const id = await enqueue(db, "mail the digest", 1);
+  await claim(db);
+  await expire(id);
+  assert.equal(await claim(db), null);
+  const [dead] = await cli("dead");
+  assert.equal(dead.last_error, "Lease expired on final attempt");
+  const receipt = await cli("redrive", dead.id, "--cycle", String(dead.run_cycle));
+  assert.deepEqual(await cli("redrive", id, "--cycle", "1"), receipt);
+  assert.deepEqual(await cli("work", "--once"), {id, status:"done"});
+  const saved = await cli("show", id);
+  assert.deepEqual([saved.run_cycle, saved.result.words], [2, 3]);
+  assert.deepEqual(await cli("dead"), []);
+});
+
+test("receipt write failure leaves the terminal job eligible for a later redrive", async () => {
+  const id = await enqueue(db, "recover", 1);
+  await fail(db, await claim(db), "temporarily unavailable");
+  await db.query("ALTER TABLE relay_redrives ADD CONSTRAINT simulate_error CHECK (from_cycle <> 1)");
+  try {
+    await assert.rejects(redrive(db, id, 1), {code:"23514"});
+    const job = await inspect(db, id);
+    assert.deepEqual([job.state, job.run_cycle, job.attempts, job.last_error],
+      ["dead", 1, 1, "temporarily unavailable"]);
+    assert.equal(await claim(db), null);
+  } finally {
+    await db.query("ALTER TABLE relay_redrives DROP CONSTRAINT simulate_error");
+  }
+  assert.equal((await redrive(db, id, 1)).job_id, id);
+});
+
+test("dead listing paginates without duplicating rows and skips other states", async () => {
+  await db.query(`INSERT INTO relay_jobs(id,payload,state,attempts,max_attempts)
+                  SELECT gen_random_uuid(),'broken','dead',1,1 FROM generate_series(1,53)`);
+  await enqueue(db, "healthy");
+  const first = await listDead(db);
+  const second = await listDead(db, first.at(-1).id);
+  assert.deepEqual([first.length, second.length], [50, 3]);
+  const ids = [...first, ...second].map(row => row.id);
+  assert.deepEqual(ids, [...new Set(ids)].sort());
+  assert.deepEqual(await listDead(db, ids.at(-1)), []);
 });
 
 test("a replacement worker fences out late success and failure messages", async () => {

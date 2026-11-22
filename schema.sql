@@ -17,3 +17,13 @@ CREATE INDEX IF NOT EXISTS relay_ready ON relay_jobs (available_at, id) WHERE st
 CREATE INDEX IF NOT EXISTS relay_running ON relay_jobs (lease_until, id) WHERE state = 'running';
 ALTER TABLE relay_jobs ADD COLUMN IF NOT EXISTS request_key text COLLATE "C";
 CREATE UNIQUE INDEX IF NOT EXISTS relay_request_key ON relay_jobs (request_key) WHERE request_key IS NOT NULL;
+ALTER TABLE relay_jobs ADD COLUMN IF NOT EXISTS run_cycle integer NOT NULL DEFAULT 1 CHECK (run_cycle >= 1);
+CREATE INDEX IF NOT EXISTS relay_dead ON relay_jobs (id) WHERE state='dead';
+CREATE TABLE IF NOT EXISTS relay_redrives (
+    job_id uuid NOT NULL REFERENCES relay_jobs(id),
+    from_cycle integer NOT NULL,
+    attempts integer NOT NULL,
+    last_error text,
+    redriven_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (job_id, from_cycle)
+);

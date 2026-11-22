@@ -100,7 +100,39 @@ export async function fail(db, job, message) {
 
 export async function inspect(db, id) {
   const {rows} = await db.query(`
-    SELECT id, state, attempts, max_attempts, available_at, lease_until, result, last_error
+    SELECT id, state, run_cycle, attempts, max_attempts, available_at, lease_until, result, last_error
     FROM relay_jobs WHERE id=$1`, [id]);
   return rows[0] ?? null;
+}
+
+export async function listDead(db, after = null) {
+  const {rows} = await db.query(`
+    SELECT id, run_cycle, attempts, last_error FROM relay_jobs
+    WHERE state='dead' AND ($1::uuid IS NULL OR id > $1)
+    ORDER BY id LIMIT 50`, [after]);
+  return rows;
+}
+
+export async function redrive(db, id, cycle) {
+  if (!Number.isInteger(cycle) || cycle < 1 || cycle >= 2_147_483_647)
+    throw new Error("Expected a positive job cycle with room for a successor");
+  // Only the reviewed terminal cycle may advance. Its receipt commits with the job update.
+  const {rows} = await db.query(`
+    WITH terminal AS MATERIALIZED (
+      SELECT id, run_cycle, attempts, last_error FROM relay_jobs
+      WHERE id=$1 AND state='dead' AND run_cycle=$2 FOR UPDATE
+    ), restarted AS (
+      UPDATE relay_jobs j SET state='ready', run_cycle=t.run_cycle+1, attempts=0,
+                              last_error=NULL, available_at=clock_timestamp()
+      FROM terminal t WHERE j.id=t.id
+      RETURNING j.id, t.run_cycle, t.attempts, t.last_error
+    )
+    INSERT INTO relay_redrives(job_id, from_cycle, attempts, last_error)
+    SELECT id, run_cycle, attempts, last_error FROM restarted
+    RETURNING *`, [id, cycle]);
+  if (rows.length) return rows[0];
+  // A concurrent winner may have committed while this statement waited on its row lock.
+  const receipt = await db.query("SELECT * FROM relay_redrives WHERE job_id=$1 AND from_cycle=$2", [id, cycle]);
+  if (receipt.rowCount) return receipt.rows[0];
+  throw new Error("No dead job at the requested cycle");
 }
