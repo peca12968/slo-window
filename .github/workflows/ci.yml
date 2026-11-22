@@ -15,3 +15,13 @@ jobs:
           python-version: '3.12'
       - run: python -m unittest -v
       - run: python replay.py examples/preview-burst.csv --workers 1 2 3 4 --staffing examples/preview-staffing.csv --queue 3 --details
+      - uses: actions/checkout@v7
+        with:
+          repository: peca12968/fair-dispatch
+          ref: 301141a6e7351a5c7f6b2bb80dc10b1a3c6d0939
+          path: dispatch-checkout
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: python dispatch_check.py dispatch-checkout

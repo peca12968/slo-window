@@ -39,6 +39,29 @@ python replay.py examples/preview-burst.csv --workers 4 --staffing examples/prev
 
 報表的 `target_worker_ms` 加總觀測期間的目標容量，`draining_worker_ms` 加總執行中數量超過當下目標的部分，`allocated_worker_ms` 是兩者之和。首筆請求到達前及最後一筆離開後的時間不計入。
 
+## 同一批工作，改變租戶派工順序
+
+一個工作者先處理暖機工作。第 1 毫秒，四筆大型轉檔先排入佇列，接著到達六筆最多願意等 12 毫秒的縮圖。用同一份到達紀錄和十個等候位置，比較先到先派與 deficit round robin。
+
+```sh
+python replay.py examples/tenant-burst.csv --workers 1 --queue 10 --compare-fair examples/tenant-policy.json --details
+```
+
+| 一個工作者 | 先到先派 | 依成本派工 |
+| --- | ---: | ---: |
+| 全部 11 筆中完成的請求 | 5 | 8 |
+| 六筆縮圖中逾時的請求 | 6 | 3 |
+| 轉檔租戶已服務請求的 P95 等待 | 13 ms | 16 ms |
+| 工作者忙碌時間 | 18 ms | 21 ms |
+
+轉檔租戶每輪有 4 個額度，縮圖租戶有 2 個。三筆縮圖分別於第 6、7、12 毫秒開始服務，其餘三筆在第 13 毫秒到期。多完成三筆縮圖，也讓最後的轉檔多等了 3 毫秒。[請求紀錄](examples/tenant-burst.csv) · [成本與租戶設定](examples/tenant-policy.json)
+
+政策檔的 `quanta` 設定各租戶的每輪額度，`jobs` 依請求 ID 指定租戶與預估成本。成本決定從等候佇列取件的順序，CSV 的 `service_ms` 決定工作者實際佔用多久。租戶內依送件順序處理，未用完的額度在仍有工作時可留到下一輪。租戶隊伍清空時額度歸零。能立刻取得空閒工作者的請求直接開始；逾時和拒絕的工作不扣額度。
+
+每個工作者配置會依序輸出 FIFO 與加權派工報告。`tenants` 將完成、逾時、佇列額滿、已派估計成本及實際忙碌時間依租戶列出。P95 只對已服務的請求計算，該租戶沒有完成請求時為 `null`。同一個 `--compare-fair` 也適用於 `--staffing` 動態增減人力。
+
+測試以 400 組動態人力與期限紀錄逐毫秒模擬，參考派工器逐輪加額度，核對每筆狀態、起訖時間與忙碌容量。另用同時等候的 80 筆工作，在三個租戶間與固定版本的 TypeScript Fair Dispatch 逐筆核對派工順序。[派工測試](test_fair.py) · [跨語言核對](dispatch_check.py) · [Fair Dispatch 固定版本](https://github.com/peca12968/fair-dispatch/tree/301141a6e7351a5c7f6b2bb80dc10b1a3c6d0939)
+
 ## 帶入自己的請求紀錄
 
 CSV 需要四個欄位，單位皆為整數毫秒。

@@ -1,0 +1,16 @@
+{
+  "quanta": {"render": 4, "thumbnail": 2},
+  "jobs": {
+    "warmup": {"tenant": "render", "cost": 2},
+    "film-1": {"tenant": "render", "cost": 4},
+    "film-2": {"tenant": "render", "cost": 4},
+    "film-3": {"tenant": "render", "cost": 4},
+    "film-4": {"tenant": "render", "cost": 4},
+    "thumb-1": {"tenant": "thumbnail", "cost": 1},
+    "thumb-2": {"tenant": "thumbnail", "cost": 1},
+    "thumb-3": {"tenant": "thumbnail", "cost": 1},
+    "thumb-4": {"tenant": "thumbnail", "cost": 1},
+    "thumb-5": {"tenant": "thumbnail", "cost": 1},
+    "thumb-6": {"tenant": "thumbnail", "cost": 1}
+  }
+}

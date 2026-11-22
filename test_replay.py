@@ -13,7 +13,7 @@ from replay import Request, Staffing, replay, replay_staffing
 ROOT = Path(__file__).resolve().parent
 
 
-def tick_reference(trace, workers, queue_limit, changes=()):
+def tick_reference(trace, workers, queue_limit, changes=(), selector=None):
     """Tiny traces only. Check every worker and every waiting request once per millisecond."""
     waiting, active, result = [], {}, {}
     peak = busy = target_time = drain_time = 0
@@ -32,9 +32,10 @@ def tick_reference(trace, workers, queue_limit, changes=()):
             if now - req.arrival_ms >= req.patience_ms:
                 result[req.id] = ("timed_out", None, now, now - req.arrival_ms)
                 waiting.remove(req)
-        for req in waiting[:]:
-            if len(active) >= workers:
-                break
+                if selector is not None:
+                    selector.expire(req)
+        while waiting and len(active) < workers:
+            req = waiting[0] if selector is None else selector.pick()
             waiting.remove(req)
             active[req.id] = (req, now)
         for req in trace:
@@ -48,6 +49,8 @@ def tick_reference(trace, workers, queue_limit, changes=()):
                 result[req.id] = ("queue_full", None, now, 0)
             else:
                 waiting.append(req)
+                if selector is not None:
+                    selector.add(req)
         peak = max(peak, len(waiting))
         busy += len(active)
         if len(result) < len(trace):

@@ -1,0 +1,12 @@
+id,arrival_ms,service_ms,patience_ms
+warmup,0,2,0
+film-1,1,4,100
+film-2,1,4,100
+film-3,1,4,100
+film-4,1,4,100
+thumb-1,1,1,12
+thumb-2,1,1,12
+thumb-3,1,1,12
+thumb-4,1,1,12
+thumb-5,1,1,12
+thumb-6,1,1,12
