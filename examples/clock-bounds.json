@@ -1,0 +1,41 @@
+{
+  "consistent": true,
+  "reference": "ingest01",
+  "offsets": {
+    "ingest01": {
+      "lower_us": 0,
+      "upper_us": 0
+    },
+    "batch01": {
+      "lower_us": -20000,
+      "upper_us": -10000
+    }
+  },
+  "queries": [],
+  "offset_pairs_us": [
+    {
+      "from": "ingest01",
+      "to": "ingest01",
+      "lower_us": 0,
+      "upper_us": 0
+    },
+    {
+      "from": "ingest01",
+      "to": "batch01",
+      "lower_us": -20000,
+      "upper_us": -10000
+    },
+    {
+      "from": "batch01",
+      "to": "ingest01",
+      "lower_us": 10000,
+      "upper_us": 20000
+    },
+    {
+      "from": "batch01",
+      "to": "batch01",
+      "lower_us": 0,
+      "upper_us": 0
+    }
+  ]
+}

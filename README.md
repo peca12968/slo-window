@@ -55,7 +55,19 @@ python trace_time.py --links examples/batch.otlp examples/enqueue-b.otlp example
 
 同一來源多次連向同一目標時，`count` 保存連結次數；重送整個批次只會增加 `duplicate_spans`。缺少完整有效目標識別碼時，狀態為 `unaddressable`。`dropped_links` 加總各唯一 span 回報的捨棄數。時間差依原始時間戳計算，跨主機時鐘偏差或作業交錯都可能產生負值。
 
-### 重新錄製
+### 用時鐘觀測解讀跨主機的時間差
+
+同一份批次範例也在 OTLP resource 記錄兩台主機的 `host.name`。可載入 Clock Bracket 的 `--pairs` 報告，將主機偏移差的微秒界限套用至原始奈秒時間戳：
+
+```sh
+python trace_time.py --clock-bounds examples/clock-bounds.json examples/batch.otlp examples/enqueue-a.otlp examples/enqueue-b.otlp
+```
+
+輸入假設兩台主機在觀測期間維持固定時鐘偏移。範例內的往返訊息將批次主機相對發布主機的偏移差限制在 −20 至 −10 毫秒。因此來源 A 的原始差值 40 毫秒調整為 **20 至 30 毫秒**；來源 B 的 15 毫秒調整為 **−5 至 +5 毫秒**，時間戳本身不足以分辨兩個事件的先後。原始差值保留在報表中。若缺少來源、主機名稱或主機配對，報告會保留缺口；單側界限仍可使用。
+
+校正只套用在連結兩端的時間差。使用者需將正確觀測期間的校正報告配對到該批追蹤，且 `host.name` 須能區分時鐘。CI 另從收發紀錄重建校正檔，重新使用 SDK 匯出三個二進位批次本文並核對結果。[收發紀錄](examples/clock-capture.json) · [跨專案驗證](clock_drill.py)
+
+### 重新錄製 SDK 資料
 
 ```sh
 python -m pip install -r requirements-test.txt
@@ -67,7 +79,7 @@ python -m unittest -v
 
 產生器以 W3C Trace Context 把結帳的上游資訊傳給庫存與付款，並用官方 Python SDK 將追蹤送至本機臨時 HTTP 接收端。示範時間固定，重新產生時會取得新的 trace 與 span ID。[產生器](examples/capture.py)
 
-八項測試涵蓋實際 HTTP 匯出、不同收件順序與重送、跨 trace 的相同 span ID、連結解析、缺漏父作業、無效報文及非同步子作業超出父區間。另以固定種子產生 500 組時間軸，逐奈秒計數，獨立核對所有時間指標。[測試](test_trace_time.py) · [CI](.github/workflows/ci.yml)
+十項測試涵蓋實際 HTTP 匯出、不同收件順序與重送、跨 trace 的相同 span ID、連結解析、時鐘界限、缺漏父作業、無效報文及非同步子作業超出父區間。另以固定種子產生 500 組時間軸，逐奈秒計數，獨立核對所有時間指標。[測試](test_trace_time.py) · [CI](.github/workflows/ci.yml)
 
 **履歷用語**　以 Python、OTLP Protobuf 與區間掃描分析跨服務追蹤，從分批及重送資料還原並行呼叫的時間覆蓋，透過官方 SDK 匯出與 500 組時間軸驗證重疊計算。
 

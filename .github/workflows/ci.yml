@@ -18,3 +18,9 @@ jobs:
       - run: python -m unittest -v
       - run: python trace_time.py examples/checkout.otlp examples/services.otlp
       - run: python trace_time.py --links examples/batch.otlp examples/enqueue-a.otlp examples/enqueue-b.otlp
+      - uses: actions/checkout@v7
+        with:
+          repository: peca12968/clock-bracket
+          ref: faa14f6d8730701c1829d3267a222a4099e5c6f5
+          path: clocks
+      - run: python clock_drill.py clocks

@@ -19,8 +19,11 @@ def generate(batch=False):
     providers = []
     memory = InMemorySpanExporter()
 
-    def tracer(service):
-        provider = TracerProvider(resource=Resource({"service.name": service}))
+    def tracer(service, host=None):
+        labels = {"service.name": service}
+        if host:
+            labels["host.name"] = host
+        provider = TracerProvider(resource=Resource(labels))
         provider.add_span_processor(SimpleSpanProcessor(memory))
         providers.append(provider)
         return provider.get_tracer("checkout-demo")
@@ -29,13 +32,13 @@ def generate(batch=False):
     ms = 1_000_000
     try:
         if batch:
-            producer = tracer("publisher")
+            producer = tracer("publisher", "ingest01")
             a = producer.start_span("enqueue A", start_time=start)
             b = producer.start_span("enqueue B", start_time=start + 10 * ms)
             a.end(end_time=start + 20 * ms)
             b.end(end_time=start + 45 * ms)
             links = [trace.Link(span.get_span_context()) for span in (a, b)]
-            flush = tracer("worker").start_span("flush batch", start_time=start + 60 * ms, links=links)
+            flush = tracer("worker", "batch01").start_span("flush batch", start_time=start + 60 * ms, links=links)
             flush.end(end_time=start + 90 * ms)
             return memory.get_finished_spans()
         root = tracer("checkout").start_span("checkout", start_time=start)

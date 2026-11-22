@@ -9,7 +9,7 @@ import unittest
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
 from examples.capture import capture
-from trace_time import Span, timing
+from trace_time import Span, corrected_delta, timing
 
 
 ROOT = Path(__file__).resolve().parent
@@ -17,6 +17,33 @@ EXAMPLES = ROOT / "examples"
 
 
 class TraceTests(unittest.TestCase):
+    def test_calibrated_links_and_missing_inputs(self):
+        paths = [EXAMPLES / name for name in ("batch.otlp", "enqueue-a.otlp", "enqueue-b.otlp")]
+        bounds = EXAMPLES / "clock-bounds.json"
+        r = self.cli("--clock-bounds", bounds, *paths)
+        values = {e["linked_name"]: e["clock_adjusted"] for e in r["links"]["edges"]}
+        self.assertEqual((values["enqueue A"]["lower_ns"], values["enqueue A"]["upper_ns"]), (20_000_000, 30_000_000))
+        self.assertEqual((values["enqueue B"]["lower_ns"], values["enqueue B"]["upper_ns"]), (-5_000_000, 5_000_000))
+        incomplete = self.cli("--clock-bounds", bounds, *paths[:-1])
+        unresolved, = [e for e in incomplete["links"]["edges"] if e["state"] == "missing"]
+        self.assertEqual(unresolved["clock_adjusted"]["state"], "missing_span")
+        self.assertIsNone(unresolved["clock_adjusted"]["lower_ns"])
+        self.assertEqual(r["traces"], self.cli(*paths)["traces"])
+        for content in [{"consistent": False}, {"consistent": True}, {"consistent": True, "offset_pairs_us":
+                        [{"from":"a","to":"b","lower_us":True,"upper_us":1}]}]:
+            bad = self.path / "bad.json"
+            bad.write_text(json.dumps(content))
+            self.assertIn(b"clock", self.cli("--clock-bounds", bad, *paths, success=False).lower())
+
+    def test_submicrosecond_delta_and_one_sided_calibration(self):
+        source = Span("s", None, "svc", "", 1006, 2000, host="b")
+        target = Span("t", None, "svc", "", 0, 1001, host="a")
+        result = corrected_delta(source, target, {("a","b"): (None, -1)})
+        self.assertEqual((result["state"], result["lower_ns"], result["upper_ns"]), ("one_sided", None, -995))
+        self.assertEqual(corrected_delta(source, target, {})["state"], "unknown_pair")
+        no_host = Span("t", None, "svc", "", 0, 1001)
+        self.assertEqual(corrected_delta(source, no_host, {})["state"], "missing_host")
+
     def setUp(self):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)

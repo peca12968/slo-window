@@ -21,6 +21,7 @@ class Span:
     end: int
     links: tuple[tuple[str, str], ...] = ()
     dropped_links: int = 0
+    host: str | None = None
 
 
 def identifier(raw, size, label):
@@ -36,8 +37,8 @@ def read_batches(paths):
         try:
             request = ExportTraceServiceRequest.FromString(path.read_bytes())
             for resource in request.resource_spans:
-                service = next((a.value.string_value for a in resource.resource.attributes
-                                if a.key == "service.name" and a.value.HasField("string_value")), None)
+                labels = {a.key: a.value.string_value for a in resource.resource.attributes
+                          if a.key in ("service.name", "host.name") and a.value.HasField("string_value")}
                 for scope in resource.scope_spans:
                     for raw in scope.spans:
                         trace = identifier(raw.trace_id, 16, "trace_id")
@@ -46,8 +47,8 @@ def read_batches(paths):
                         if raw.end_time_unix_nano < raw.start_time_unix_nano:
                             raise ValueError(f"span {key} ends before it starts")
                         links = tuple(sorted((link.trace_id.hex(), link.span_id.hex()) for link in raw.links))
-                        span = Span(key, parent, service, raw.name, raw.start_time_unix_nano,
-                                    raw.end_time_unix_nano, links, raw.dropped_links_count)
+                        span = Span(key, parent, labels.get("service.name"), raw.name, raw.start_time_unix_nano,
+                                    raw.end_time_unix_nano, links, raw.dropped_links_count, labels.get("host.name"))
                         previous = traces[trace].get(key)
                         if previous is None:
                             traces[trace][key] = span
@@ -119,7 +120,44 @@ def summarize(trace, spans):
     return {"trace_id": trace, "root_ids": sorted(roots), "missing_parent_ids": sorted(missing), "spans": rows}
 
 
-def link_report(traces):
+def read_clock_bounds(path):
+    report = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(report, dict) or report.get("consistent") is not True or not isinstance(report.get("offset_pairs_us"), list):
+        raise ValueError("expected a consistent Clock Bracket --pairs report")
+    bounds = {}
+    for row in report["offset_pairs_us"]:
+        if not isinstance(row, dict) or not all(isinstance(row.get(k), str) and row[k].strip() for k in ("from", "to")):
+            raise ValueError("invalid clock pair hosts")
+        if not all(k in row and (row[k] is None or type(row[k]) is int) for k in ("lower_us", "upper_us")):
+            raise ValueError("invalid clock pair bounds")
+        key, lo, hi = (row["from"], row["to"]), row["lower_us"], row["upper_us"]
+        if key in bounds or (lo is not None and hi is not None and lo > hi) or (key[0] == key[1] and (lo, hi) != (0, 0)):
+            raise ValueError("duplicate or inconsistent clock pair")
+        bounds[key] = (lo, hi)
+    return bounds
+
+
+def corrected_delta(source, target, bounds):
+    pair = (target.host if target else None, source.host)
+    result = {"from_host": pair[0], "to_host": pair[1], "lower_ns": None, "upper_ns": None}
+    if target is None:
+        state = "missing_span"
+    elif not all(pair):
+        state = "missing_host"
+    elif pair not in bounds:
+        state = "unknown_pair"
+    else:
+        lo, hi = bounds[pair]
+        raw = source.start - target.end
+        result["lower_ns"] = raw + lo * 1000 if lo is not None else None
+        result["upper_ns"] = raw + hi * 1000 if hi is not None else None
+        state = "bounded" if lo is not None and hi is not None else "one_sided"
+        if lo is None and hi is None:
+            state = "unbounded"
+    return {**result, "state": state}
+
+
+def link_report(traces, bounds=None):
     edges = []
     dropped = 0
     for trace, spans in sorted(traces.items()):
@@ -134,6 +172,8 @@ def link_report(traces):
                               "linked_trace_id": tid, "linked_span_id": sid, "count": count, "state": state,
                               "linked_name": target.name if target else None,
                               "start_minus_linked_end_ns": source.start - target.end if target else None})
+                if bounds is not None:
+                    edges[-1]["clock_adjusted"] = corrected_delta(source, target, bounds)
     return {"edges": edges, "dropped_links": dropped}
 
 
@@ -141,16 +181,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batches", type=Path, nargs="+", help="uncompressed binary OTLP export request bodies")
     parser.add_argument("--links", action="store_true", help="resolve span links across the supplied batches")
+    parser.add_argument("--clock-bounds", type=Path, help="include linked-span timing with calibrated host offset bounds")
     args = parser.parse_args()
     try:
+        bounds = read_clock_bounds(args.clock_bounds) if args.clock_bounds else None
         traces, duplicates = read_batches(args.batches)
         reports = [summarize(key, traces[key]) for key in sorted(traces)]
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         print(error, file=sys.stderr)
         return 2
     result = {"duplicate_spans": duplicates, "traces": reports}
-    if args.links:
-        result["links"] = link_report(traces)
+    if args.links or bounds is not None:
+        result["links"] = link_report(traces, bounds)
     print(json.dumps(result, indent=2))
     return 0
 
