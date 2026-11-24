@@ -29,7 +29,7 @@ date,requests,errors
 
 ## 指標怎麼算
 
-想從逐筆日誌開始展示，可將兩份有重疊的輪替日誌轉成 CSV 再匯入本頁。逐行統計時有 7 筆請求與 3 筆 5xx，可用率為 57.143%。用 CLI 的 `--dedupe` 依請求 ID 去重後，得到 5 筆請求與 2 筆 5xx，可用率為 60.000%，5 月 3 日仍標示缺資料。GitHub Actions 從固定提交建置 CLI，用兩份日誌實際產生這兩個 CSV，再由 Playwright 依序匯入並核對畫面。[日誌與重現步驟](https://github.com/peca12968/access-log-rollup)
+想從逐筆日誌開始展示，可將兩份有重疊的輪替日誌轉成 CSV 再匯入本頁。逐行統計時有 7 筆請求與 3 筆 5xx，可用率為 57.143%。用 CLI 的 `--dedupe` 依請求 ID 去重後，得到 5 筆請求與 2 筆 5xx，可用率為 60.000%，5 月 3 日仍標示缺資料。GitHub Actions 從固定提交建置 CLI，用兩份日誌實際產生這兩個 CSV，再由 Playwright 依序匯入並核對畫面。[日誌與重現步驟](https://github.com/peca12968/slo-window/tree/main/modules/access-log-rollup)
 
 - **觀測可用率**等於 1 − 總失敗數 ÷ 總請求數。按流量加權，避免低流量日扭曲結果。
 - **容許失敗數**等於總請求數 ×（1 − 目標可用率）。剩餘預算百分比為（容許失敗數 − 實際失敗數）÷ 容許失敗數 × 100%。
@@ -50,3 +50,5 @@ React 與 TypeScript 負責畫面及狀態，[指標計算](src/metrics.ts)可�
 **履歷用語**　以 React 與 TypeScript 開發 SLO 儀表板，計算請求加權可用率、錯誤預算與跨期差距，以 Vitest 和 Playwright 驗證閏日、缺失觀測、零流量及行動版 CSV 匯入流程。
 
 本專案為使用 AI 輔助建立的作品集示範。
+
+[同庫模組與整合測試](modules/README.md)

@@ -1,0 +1,81 @@
+name: Verify slo-window system
+'on':
+- push
+- pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    - run: npm ci
+    - run: npm test
+    - run: npm run build
+    - run: npx playwright install --with-deps chromium
+    - name: Check out the tested log producer
+      uses: actions/checkout@v4
+      with:
+        ref: f0598db162c034eb5755b2bd8e61b562b23896ff
+        path: producer
+        persist-credentials: false
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+    - name: Convert checkout logs into browser input
+      run: |
+        dotnet build producer/src -c Release
+        logs=(producer/examples/rotation-1.ndjson producer/examples/rotation-2.ndjson)
+        dotnet producer/src/bin/Release/net10.0/access-rollup.dll "${logs[@]}" > "$RUNNER_TEMP/raw.csv"
+        dotnet producer/src/bin/Release/net10.0/access-rollup.dll --dedupe "${logs[@]}" > "$RUNNER_TEMP/checkout.csv"
+    - run: npm run test:e2e
+      env:
+        CHECKOUT_ROLLUP_CSV: ${{ runner.temp }}/checkout.csv
+        RAW_ROLLUP_CSV: ${{ runner.temp }}/raw.csv
+  access-log-rollup-cli:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - run: dotnet build src -c Release
+    - run: python -m unittest -v
+    - uses: actions/checkout@v4
+      with:
+        ref: 45fe432d87d451e8865a6fc639e320fdd3ae7502
+        path: modules/access-log-rollup/consumer
+        persist-credentials: false
+    - run: python latency_demo.py consumer/verdict.py
+    defaults:
+      run:
+        working-directory: modules/access-log-rollup
+  bucket-verdict-verify:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+    - run: python -m unittest -v
+    - run: python verdict.py examples/checkout.csv --threshold-ms 120 --target .8 --quantile .9
+    defaults:
+      run:
+        working-directory: modules/bucket-verdict

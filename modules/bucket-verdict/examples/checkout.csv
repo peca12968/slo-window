@@ -1,0 +1,8 @@
+shard,le_ms,cumulative_count
+north,100,6
+north,200,9
+north,+Inf,10
+south,80,4
+south,150,8
+south,300,10
+south,+Inf,10
