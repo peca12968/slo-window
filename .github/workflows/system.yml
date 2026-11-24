@@ -79,3 +79,216 @@ jobs:
     defaults:
       run:
         working-directory: modules/bucket-verdict
+  trace-time-verify:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+        python:
+        - '3.12'
+        - '3.13'
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ matrix.python }}
+    - run: python -m pip install -r requirements-test.txt
+    - run: python -m unittest -v
+    - run: python trace_time.py examples/checkout.otlp examples/services.otlp
+    - run: python trace_time.py --links examples/batch.otlp examples/enqueue-a.otlp examples/enqueue-b.otlp
+    - uses: actions/checkout@v7
+      with:
+        ref: faa14f6d8730701c1829d3267a222a4099e5c6f5
+        path: modules/trace-time/clocks
+    - run: python clock_drill.py clocks
+    defaults:
+      run:
+        working-directory: modules/trace-time
+  trace-time-clock-bracket-test:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - run: python -m unittest -v
+    - run: python clock_bracket.py examples/checkout.json --explain
+    defaults:
+      run:
+        working-directory: modules/trace-time/modules/clock-bracket
+  pause-lens-profile:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '21'
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - run: python verify.py
+    defaults:
+      run:
+        working-directory: modules/pause-lens
+  load-receipt-verify:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: modules/load-receipt/package-lock.json
+    - run: npm ci
+    - run: npx playwright install --with-deps chromium
+    - run: npm test
+    defaults:
+      run:
+        working-directory: modules/load-receipt
+  capacity-replay-simulate:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - run: python -m unittest -v
+    - run: python replay.py examples/preview-burst.csv --workers 1 2 3 4 --staffing examples/preview-staffing.csv --queue 3 --details
+    - uses: actions/checkout@v7
+      with:
+        ref: 301141a6e7351a5c7f6b2bb80dc10b1a3c6d0939
+        path: modules/capacity-replay/dispatch-checkout
+        persist-credentials: false
+    - uses: actions/setup-node@v7
+      with:
+        node-version: '24'
+    - run: python dispatch_check.py dispatch-checkout
+    defaults:
+      run:
+        working-directory: modules/capacity-replay
+  capacity-replay-fair-dispatch-scheduler:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v7
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: modules/capacity-replay/modules/fair-dispatch/package-lock.json
+    - run: npm ci
+    - run: npm run check
+    - run: npm test
+    - run: npm run demo
+    defaults:
+      run:
+        working-directory: modules/capacity-replay/modules/fair-dispatch
+  relay-job-queue-database:
+    strategy:
+      matrix:
+        postgres:
+        - '16'
+        - '17'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: relay
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 3s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:ci-only@127.0.0.1:5432/relay
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: modules/relay-job-queue/package-lock.json
+    - run: npm ci
+    - run: npm test
+    - name: Exercise CLI from enqueue to result
+      run: |-
+        node cli.js init
+        id=$(node cli.js enqueue "queue integration demo" --key demo-1)
+        test "$id" = "$(node cli.js enqueue 'queue integration demo' --key demo-1)"
+        node cli.js work --once
+        test "$id" = "$(node cli.js enqueue 'queue integration demo' --key demo-1)"
+        node cli.js show "$id" | node --input-type=commonjs -e "const j=JSON.parse(require('node:fs').readFileSync(0)); if(j.state!=='done' || j.result.words!==3) process.exit(1)"
+    defaults:
+      run:
+        working-directory: modules/relay-job-queue
+  coalesced-cache-check:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-go@v6
+      with:
+        go-version: 1.25.x
+        cache: false
+    - run: go vet ./...
+    - run: go test ./...
+    - if: runner.os == 'Linux'
+      run: go test -race -count=5 ./...
+    - run: go run ./cmd/cache-demo
+    defaults:
+      run:
+        working-directory: modules/coalesced-cache
+  replica-map-verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: modules/replica-map/go.mod
+        cache: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - run: go vet ./...
+    - run: go test -v ./...
+    - run: go build -o replica-map.exe ./cmd/replica-map
+    - run: python reference_check.py replica-map.exe
+    defaults:
+      run:
+        working-directory: modules/replica-map

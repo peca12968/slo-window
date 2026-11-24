@@ -1,0 +1,13 @@
+{
+  "hosts": ["api", "worker", "db"],
+  "reference": "api",
+  "messages": [
+    {"id":"enqueue","from":"api","to":"worker","send_us":1000,"receive_us":1050},
+    {"id":"ack","from":"worker","to":"api","send_us":1070,"receive_us":1040},
+    {"id":"read","from":"worker","to":"db","send_us":1060,"receive_us":1048,"min_us":2,"max_us":6}
+  ],
+  "queries": [
+    {"id":"unconfirmed","from":"api","to":"worker","start_us":1000,"end_us":1042},
+    {"id":"db-event","from":"api","to":"db","start_us":1000,"end_us":1060}
+  ]
+}

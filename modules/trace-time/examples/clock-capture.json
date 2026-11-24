@@ -1,0 +1,8 @@
+{
+  "hosts": ["ingest01", "batch01"],
+  "reference": "ingest01",
+  "messages": [
+    {"id": "request", "from": "ingest01", "to": "batch01", "send_us": 100000, "receive_us": 120000},
+    {"id": "reply", "from": "batch01", "to": "ingest01", "send_us": 130000, "receive_us": 120000}
+  ]
+}

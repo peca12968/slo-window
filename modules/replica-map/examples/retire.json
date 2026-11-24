@@ -1,0 +1,16 @@
+{
+  "before": {"copies": 2, "nodes": [
+    {"id":"north-a","zone":"north","weight":1},
+    {"id":"east-a","zone":"east","weight":1},
+    {"id":"south-a","zone":"south","weight":1}
+  ]},
+  "after": {"copies": 2, "nodes": [
+    {"id":"north-b","zone":"north","weight":1},
+    {"id":"east-b","zone":"east","weight":1},
+    {"id":"south-a","zone":"south","weight":1}
+  ]},
+  "objects": [
+    {"key":"menu","bytes":240},{"key":"cover","bytes":900},{"key":"banner","bytes":720},
+    {"key":"map","bytes":380},{"key":"badge","bytes":60},{"key":"guide","bytes":550}
+  ]
+}
