@@ -79,8 +79,10 @@ python -m unittest -v
 
 產生器以 W3C Trace Context 把結帳的上游資訊傳給庫存與付款，並用官方 Python SDK 將追蹤送至本機臨時 HTTP 接收端。示範時間固定，重新產生時會取得新的 trace 與 span ID。[產生器](examples/capture.py)
 
-十項測試涵蓋實際 HTTP 匯出、不同收件順序與重送、跨 trace 的相同 span ID、連結解析、時鐘界限、缺漏父作業、無效報文及非同步子作業超出父區間。另以固定種子產生 500 組時間軸，逐奈秒計數，獨立核對所有時間指標。[測試](test_trace_time.py) · [CI](.github/workflows/ci.yml)
+十項測試涵蓋實際 HTTP 匯出、不同收件順序與重送、跨 trace 的相同 span ID、連結解析、時鐘界限、缺漏父作業、無效報文及非同步子作業超出父區間。另以固定種子產生 500 組時間軸，逐奈秒計數，獨立核對所有時間指標。[測試](test_trace_time.py) · [CI](.github/workflows/system.yml)
 
 **履歷用語**　以 Python、OTLP Protobuf 與區間掃描分析跨服務追蹤，從分批及重送資料還原並行呼叫的時間覆蓋，透過官方 SDK 匯出與 500 組時間軸驗證重疊計算。
 
 本專案使用 AI 輔助開發，結帳與付款資料為合成範例。
+
+[同庫模組與整合測試](modules/README.md)
