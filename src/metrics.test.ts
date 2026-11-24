@@ -4,7 +4,7 @@ const csv = (rows: string) => parseCsv("date,requests,errors\n" + rows);
 test("weights by requests and keeps missing calendar days explicit", () => {
   const r = summarize(csv("2026-02-03,900,0\n2026-02-01,100,10"), 3, 9900);
   expect(r.availability).toBe(99);
-  expect(r.within).toBe(true);
+  expect(r.within).toBeNull();
   expect(r.budget).toBe(0);
   expect(r.coverage).toBe(2);
   expect(r.series[1].sample).toBeUndefined();
@@ -67,4 +67,33 @@ test("reports declines in percentage points independently of the selected SLO ta
   for (const target of [9900, 9995]) {
     expect(comparePeriods(rows, 1, target).difference).toBeCloseTo(-1);
   }
+});
+
+test("uses a UTC cutoff to expose trailing gaps and to omit observations after a historical cutoff", () => {
+  const rows = csv("2024-02-28,100,0\n2024-02-29,100,1\n2024-03-01,100,10\n2024-03-02,100,0");
+  const late = comparePeriods(rows, 2, 9900, "2024-03-03");
+  expect(late.current.series.map(({ date }) => date)).toEqual(["2024-03-02", "2024-03-03"]);
+  expect(late.current.coverage).toBe(1);
+  expect(late.current.availability).toBe(100);
+  expect(late.current.within).toBeNull();
+  expect(late.difference).toBeNull();
+  expect(late.previous.series.map(({ date }) => date)).toEqual(["2024-02-29", "2024-03-01"]);
+  const historical = summarize(rows, 2, 9900, "2024-02-29");
+  expect(historical.errors).toBe(1);
+  expect(historical.within).toBe(true);
+  const unavailable = summarize(rows, 2, 9900, "2024-04-01");
+  expect(unavailable.coverage).toBe(0);
+  expect(unavailable.availability).toBeNull();
+  expect(() => comparePeriods(rows, 2, 9900, "2024-02-30")).toThrow("UTC 截止日");
+});
+
+test("uses exact integers for a one-unit threshold difference beyond float precision", () => {
+  const rows = csv(Array.from({ length: 10 }, (_, index) =>
+    `2026-05-${String(index + 1).padStart(2, "0")},${900_000_000_000 + Number(index === 9)},${899_910_000_000 + Number(index === 9)}`
+  ).join("\n"));
+  const report = summarize(rows, 10, 1);
+  // The two large products round to the same Number. The exact margin is -1.
+  expect(report.errors * 10_000).toBe(report.requests * 9999);
+  expect(report.within).toBe(false);
+  expect(report.budget).toBeLessThan(0);
 });

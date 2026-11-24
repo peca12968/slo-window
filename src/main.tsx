@@ -12,9 +12,11 @@ function Dashboard() {
   const [source, setSource] = useState("結帳服務 · 示範資料");
   const [days, setDays] = useState(14);
   const [target, setTarget] = useState(9990);
+  const [endDate, setEndDate] = useState<string | null>(null);
   const [error, setError] = useState("");
   const field = useId();
-  const comparison = comparePeriods(rows, days, target);
+  const reportDate = endDate ?? rows.at(-1)!.date;
+  const comparison = comparePeriods(rows, days, target, reportDate);
   const report = comparison.current;
   const dailyRate = (count: number, total: number) =>
     total ? (count / total) * 100 : 0;
@@ -26,8 +28,10 @@ function Dashboard() {
         sample ? dailyRate(sample.errors, sample.requests) : 0,
       ),
     ) * 1.15;
-  const status =
-    report.within === null ? "無請求" : report.within ? "已達標" : "未達標";
+  const incomplete = report.coverage < days;
+  const status = incomplete
+    ? "資料不足，結論待確認"
+    : report.within === null ? "無請求" : report.within ? "已達標" : "未達標";
   return (
     <main>
       <header>
@@ -62,6 +66,18 @@ function Dashboard() {
               ))}
             </select>
           </label>
+          <div className="end-date">
+            <label>
+              截止日（UTC）
+              <input type="date" min="0001-01-01" max="9999-12-31" value={reportDate}
+                onChange={(event) => {
+                  if (event.currentTarget.validity.valid) setEndDate(event.currentTarget.value || null);
+                }} />
+            </label>
+            {endDate !== null && (
+              <button type="button" onClick={() => setEndDate(null)}>回到最新資料日</button>
+            )}
+          </div>
         </div>
       </section>
       <section className="metrics" aria-label="區間指標">
@@ -81,12 +97,12 @@ function Dashboard() {
             {report.budget?.toFixed(1) ?? "—"}
             {report.budget !== null && "%"}
           </strong>
-          <span>低於 0% 表示預算已耗盡</span>
+          <span>{incomplete ? "依已觀測資料估算" : "低於 0% 表示預算已耗盡"}</span>
         </article>
         <article>
           <h2>失敗請求</h2>
-          <strong>{format.format(report.errors)}</strong>
-          <span>共 {format.format(report.requests)} 筆請求</span>
+          <strong>{report.coverage ? format.format(report.errors) : "—"}</strong>
+          <span>{report.coverage ? `共 ${format.format(report.requests)} 筆請求` : "本期無觀測資料"}</span>
         </article>
       </section>
       <section className="panel">
@@ -117,7 +133,7 @@ function Dashboard() {
         </div>
         <div className="axis">
           <span>{report.series[0].date}</span>
-          <span>{rows.at(-1)?.date}</span>
+          <span>{reportDate}</span>
         </div>
         <details>
           <summary>查看逐日數值</summary>

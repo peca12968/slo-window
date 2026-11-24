@@ -1,6 +1,15 @@
 export type Sample = { date: string; requests: number; errors: number };
 const day = 86_400_000;
 
+function utcDay(value: string) {
+  const time = Date.parse(value + "T00:00:00Z");
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(time) &&
+    new Date(time).toISOString().slice(0, 10) === value
+    ? time
+    : NaN;
+}
+
 export function parseCsv(text: string): Sample[] {
   const [header, ...lines] = text
     .replace(/^\uFEFF/, "")
@@ -16,12 +25,7 @@ export function parseCsv(text: string): Sample[] {
       const [date, requests, errors, ...extra] = line
         .split(",")
         .map((value) => value.trim());
-      const time = Date.parse(date + "T00:00:00Z");
-      const invalidDate =
-        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-        !Number.isFinite(time) ||
-        new Date(time).toISOString().slice(0, 10) !== date;
-      if (invalidDate || seen.has(date))
+      if (!Number.isFinite(utcDay(date)) || seen.has(date))
         throw Error(`第 ${index + 2} 列的日期無效或重複`);
       // The per-day ceiling keeps the sum of all accepted rows within JS safe integers.
       const count = (value: string) => /^\d{1,12}$/.test(value);
@@ -58,27 +62,34 @@ function summarizeWindow(
     (sum, row) => sum + (row.sample?.errors ?? 0),
     0,
   );
-  const allowance = requests * ((10_000 - targetBps) / 10_000);
+  const coverage = series.filter((row) => row.sample).length;
+  // Scale the allowance and spend by 10,000 before comparing exact integers.
+  const allowance = BigInt(requests) * BigInt(10_000 - targetBps);
+  const remaining = allowance - BigInt(errors) * 10_000n;
   return {
     series,
     requests,
     errors,
-    coverage: series.filter((row) => row.sample).length,
+    coverage,
     availability: requests ? (1 - errors / requests) * 100 : null,
-    // Use integer units for the threshold comparison to avoid rounded display decisions.
-    within: requests
-      ? errors * 10_000 <= requests * (10_000 - targetBps)
-      : null,
-    budget: allowance ? (1 - errors / allowance) * 100 : null,
+    within: requests && coverage === days ? remaining >= 0n : null,
+    budget: allowance ? (Number(remaining) / Number(allowance)) * 100 : null,
   };
+}
+
+function windowEnd(rows: Sample[], endDate?: string) {
+  const end = utcDay(endDate ?? rows.at(-1)?.date ?? "");
+  if (!Number.isFinite(end)) throw Error("請指定有效的 UTC 截止日");
+  return end;
 }
 
 export function comparePeriods(
   rows: Sample[],
   days: number,
   targetBps: number,
+  endDate?: string,
 ) {
-  const end = Date.parse(rows[rows.length - 1].date + "T00:00:00Z");
+  const end = windowEnd(rows, endDate);
   const byDate = new Map(rows.map((row) => [row.date, row]));
   const current = summarizeWindow(byDate, days, targetBps, end);
   const previous = summarizeWindow(byDate, days, targetBps, end - days * day);
@@ -92,12 +103,11 @@ export function comparePeriods(
   return { current, previous, difference, fullCoverage };
 }
 
-export function summarize(rows: Sample[], days: number, targetBps: number) {
-  const end = Date.parse(rows[rows.length - 1].date + "T00:00:00Z");
+export function summarize(rows: Sample[], days: number, targetBps: number, endDate?: string) {
   return summarizeWindow(
     new Map(rows.map((row) => [row.date, row])),
     days,
     targetBps,
-    end,
+    windowEnd(rows, endDate),
   );
 }

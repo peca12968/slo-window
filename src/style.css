@@ -57,6 +57,8 @@ h1 {
   word-break: break-all;
 }
 .controls {
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 14px;
 }
 label {
@@ -68,13 +70,26 @@ select,
 input {
   font: inherit;
 }
-select {
+select,
+.end-date input {
   display: block;
   background: #fffef8;
   padding: 7px 12px;
   border: 1px solid #99a79c;
   border-radius: 5px;
   margin-top: 6px;
+}
+.end-date button {
+  display: block;
+  margin-top: 6px;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  color: #235848;
+  text-decoration: underline;
+  background: transparent;
+  cursor: pointer;
 }
 .metrics {
   display: grid;

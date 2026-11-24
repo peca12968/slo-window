@@ -15,7 +15,7 @@ test("changes target, imports a file, and preserves the last good report after a
     buffer: Buffer.from("date,requests,errors\n2026-02-01,1000,6"),
   });
   await expect(page.locator("article.hero").getByText("99.400%")).toBeVisible();
-  await expect(page.getByText("未達標 · 資料涵蓋 1/7 天")).toBeVisible();
+  await expect(page.getByText("資料不足，結論待確認 · 資料涵蓋 1/7 天")).toBeVisible();
   await page.getByText("查看逐日數值").click();
   await expect(page.getByRole("cell", { name: "0.600%" })).toBeVisible();
   await upload.setInputFiles({
@@ -44,7 +44,7 @@ test("compares overlapping and deduplicated log counts and preserves observation
     name: "checkout.csv", mimeType: "text/csv", buffer: csv,
   });
   await expect(page.locator("article.hero").getByText("60.000%", { exact: true })).toBeVisible();
-  await expect(page.getByText("未達標 · 資料涵蓋 3/14 天")).toBeVisible();
+  await expect(page.getByText("資料不足，結論待確認 · 資料涵蓋 3/14 天")).toBeVisible();
   await expect(page.getByText("共 5 筆請求")).toBeVisible();
   await page.getByText("查看逐日數值").click();
   await expect(page.getByRole("row").filter({ hasText: "2026-05-03" })).toContainText("缺資料");
@@ -71,5 +71,32 @@ test("compares complete periods then identifies a missing day on mobile", async 
   await expect(comparison).toContainText("至少一期缺少日期");
   await comparison.getByText("查看缺資料的日期").click();
   await expect(comparison.getByText("前期：2026-05-01", {exact:true})).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("retains an explicit UTC cutoff across imports and surfaces trailing gaps on mobile", async ({page}) => {
+  await page.setViewportSize({width: 360, height: 850});
+  await page.goto("/");
+  const date = page.getByLabel("截止日（UTC）");
+  const metrics = page.getByRole("region", {name: "區間指標"});
+  await expect(date).toHaveValue("2026-05-14");
+  await expect(metrics).toContainText("已達標 · 資料涵蓋 14/14 天");
+  await date.fill("2026-05-17");
+  await expect(metrics).toContainText("資料不足，結論待確認 · 資料涵蓋 11/14 天");
+  await expect(metrics).toContainText("依已觀測資料估算");
+  await page.getByText("查看逐日數值").click();
+  await expect(page.getByRole("row").filter({
+    has: page.getByRole("cell", {name: "2026-05-17", exact: true}),
+  })).toContainText("缺資料");
+
+  await page.getByLabel("選擇 CSV 檔案").setInputFiles({
+    name: "later.csv", mimeType: "text/csv",
+    buffer: Buffer.from("date,requests,errors\n2026-06-10,100,0"),
+  });
+  await expect(date).toHaveValue("2026-05-17");
+  await expect(metrics).toContainText("本期無觀測資料");
+  await page.getByRole("button", {name:"回到最新資料日"}).click();
+  await expect(date).toHaveValue("2026-06-10");
+  await expect(metrics).toContainText("共 100 筆請求");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
