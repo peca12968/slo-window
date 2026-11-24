@@ -1,7 +1,8 @@
 import React, { useId, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { parseCsv, comparePeriods } from "./metrics";
+import { budgetExcess, budgetOverruns, parseCsv, comparePeriods } from "./metrics";
 import { PeriodComparison } from "./PeriodComparison";
+import { BudgetOverruns } from "./BudgetOverruns";
 import sample from "./sample.csv?raw";
 import sampleUrl from "./sample.csv?url";
 import "./style.css";
@@ -123,7 +124,7 @@ function Dashboard() {
               >
                 {sample && (
                   <div
-                    className={(rate ?? 0) > threshold ? "bar over" : "bar"}
+                    className={budgetExcess(sample.requests, sample.errors, target) > 0n ? "bar over" : "bar"}
                     style={{ height: ((rate ?? 0) / peak) * 100 + "%" }}
                   />
                 )}
@@ -164,6 +165,7 @@ function Dashboard() {
           </table>
         </details>
       </section>
+      <BudgetOverruns analysis={budgetOverruns(report.series, target)} coverage={report.coverage} days={days} />
       <PeriodComparison comparison={comparison} />
       <section className="imports">
         <div>

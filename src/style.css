@@ -265,3 +265,31 @@ input {
     padding: 5px 2px;
   }
 }
+.overrun-note {
+  color: #923e27;
+}
+.overrun-total strong {
+  font-variant-numeric: tabular-nums;
+  color: #923e27;
+}
+.overruns ol {
+  margin: 14px 0 0;
+  padding-left: 25px;
+}
+.overruns li {
+  padding: 10px 0;
+  border-top: 1px solid #d8dfd4;
+}
+.overrun-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 14px;
+  font-variant-numeric: tabular-nums;
+}
+.overruns li p {
+  margin: 5px 0;
+}
+.overruns small {
+  color: #496355;
+}

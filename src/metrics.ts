@@ -1,5 +1,55 @@
 export type Sample = { date: string; requests: number; errors: number };
+type WindowDay = { date: string; sample?: Sample };
+type Boundary = "window_edge" | "missing" | "zero_traffic" | "within_allowance";
+type BudgetPeriod = {
+  start: string;
+  end: string;
+  days: number;
+  requests: number;
+  errors: number;
+  excessScaled: bigint;
+  before: Boundary;
+  after: Boundary;
+};
 const day = 86_400_000;
+const scale = 10_000n;
+
+function budgetAllowance(requests: number, targetBps: number) {
+  return BigInt(requests) * (scale - BigInt(targetBps));
+}
+
+export function budgetExcess(requests: number, errors: number, targetBps: number) {
+  return BigInt(errors) * scale - budgetAllowance(requests, targetBps);
+}
+
+export function budgetOverruns(series: WindowDay[], targetBps: number) {
+  const periods: BudgetPeriod[] = [];
+  let current: Omit<BudgetPeriod, "after"> | undefined;
+  let before: Boundary = "window_edge";
+  let totalExcessScaled = 0n;
+  for (const { date, sample } of series) {
+    const excess = sample ? budgetExcess(sample.requests, sample.errors, targetBps) : 0n;
+    if (sample && excess > 0n) {
+      current ??= { start: date, end: date, days: 0, requests: 0, errors: 0, excessScaled: 0n, before };
+      current.end = date;
+      current.days++;
+      current.requests += sample.requests;
+      current.errors += sample.errors;
+      current.excessScaled += excess;
+      totalExcessScaled += excess;
+      continue;
+    }
+    before = !sample ? "missing" : sample.requests === 0 ? "zero_traffic" : "within_allowance";
+    if (current) periods.push({ ...current, after: before });
+    current = undefined;
+  }
+  if (current) periods.push({ ...current, after: "window_edge" });
+  periods.sort((a, b) => {
+    if (a.excessScaled === b.excessScaled) return a.start.localeCompare(b.start);
+    return a.excessScaled > b.excessScaled ? -1 : 1;
+  });
+  return { periods, totalExcessScaled };
+}
 
 function utcDay(value: string) {
   const time = Date.parse(value + "T00:00:00Z");
@@ -64,8 +114,8 @@ function summarizeWindow(
   );
   const coverage = series.filter((row) => row.sample).length;
   // Scale the allowance and spend by 10,000 before comparing exact integers.
-  const allowance = BigInt(requests) * BigInt(10_000 - targetBps);
-  const remaining = allowance - BigInt(errors) * 10_000n;
+  const allowance = budgetAllowance(requests, targetBps);
+  const remaining = allowance - BigInt(errors) * scale;
   return {
     series,
     requests,

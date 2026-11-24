@@ -1,0 +1,72 @@
+[
+  {
+    "scenario": "base",
+    "targetBps": 9990,
+    "days": 7,
+    "cutoff": "2026-05-14",
+    "coverage": 7,
+    "periods": [
+      {
+        "start": "2026-05-10",
+        "end": "2026-05-10",
+        "days": 1,
+        "requests": 19100,
+        "errors": 72,
+        "excessScaled": "529000",
+        "before": "within_allowance",
+        "after": "within_allowance"
+      }
+    ],
+    "totalExcessScaled": "529000"
+  },
+  {
+    "scenario": "strict",
+    "targetBps": 9995,
+    "days": 7,
+    "cutoff": "2026-05-14",
+    "coverage": 7,
+    "periods": [
+      {
+        "start": "2026-05-08",
+        "end": "2026-05-11",
+        "days": 4,
+        "requests": 65700,
+        "errors": 103,
+        "excessScaled": "701500",
+        "before": "window_edge",
+        "after": "within_allowance"
+      }
+    ],
+    "totalExcessScaled": "701500"
+  },
+  {
+    "scenario": "gap",
+    "targetBps": 9995,
+    "days": 7,
+    "cutoff": "2026-05-14",
+    "coverage": 6,
+    "periods": [
+      {
+        "start": "2026-05-10",
+        "end": "2026-05-11",
+        "days": 2,
+        "requests": 33700,
+        "errors": 85,
+        "excessScaled": "681500",
+        "before": "missing",
+        "after": "within_allowance"
+      },
+      {
+        "start": "2026-05-08",
+        "end": "2026-05-08",
+        "days": 1,
+        "requests": 15800,
+        "errors": 8,
+        "excessScaled": "1000",
+        "before": "window_edge",
+        "after": "missing"
+      }
+    ],
+    "totalExcessScaled": "682500"
+  }
+]

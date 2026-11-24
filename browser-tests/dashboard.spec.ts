@@ -100,3 +100,27 @@ test("retains an explicit UTC cutoff across imports and surfaces trailing gaps o
   await expect(metrics).toContainText("共 100 筆請求");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+test("ranks budget overruns and splits what looks continuous when a CSV observation is missing", async ({page}) => {
+  await page.setViewportSize({width: 360, height: 850});
+  await page.goto("/");
+  await page.getByLabel("觀測區間").selectOption("7");
+  const overruns = page.getByRole("region", {name: "錯誤預算超額區段"});
+  await expect(overruns).toContainText("1 段 · 合計超額 52.9 筆");
+  await expect(overruns.getByRole("listitem")).toContainText("2026-05-10");
+  await page.getByLabel("可用率目標").selectOption("9995");
+  await expect(overruns).toContainText("1 段 · 合計超額 70.15 筆");
+  await expect(overruns.getByRole("listitem")).toContainText("2026-05-08 至 2026-05-11");
+
+  const sample = readFileSync(new URL("../src/sample.csv", import.meta.url), "utf8");
+  await page.getByLabel("選擇 CSV 檔案").setInputFiles({name: "gap.csv", mimeType: "text/csv",
+    buffer: Buffer.from(sample.replace(/^2026-05-09,[^\r\n]+\r?\n/m, ""))});
+  await expect(overruns).toContainText("2 段 · 合計超額 68.25 筆");
+  await expect(overruns.getByRole("listitem").nth(0)).toContainText("2026-05-10 至 2026-05-11");
+  await expect(overruns.getByRole("listitem").nth(0)).toContainText("前方 缺資料");
+  await expect(overruns.getByRole("listitem").nth(1)).toContainText("超額 0.1 筆");
+  await expect(overruns.getByRole("listitem").nth(1)).toContainText("後方 缺資料");
+  await page.getByLabel("截止日（UTC）").fill("2026-05-10");
+  await expect(overruns.getByRole("listitem").nth(0)).toContainText("後方 觀測區間邊界");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
