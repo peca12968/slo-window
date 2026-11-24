@@ -1,8 +1,9 @@
 import React, { useId, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { budgetExcess, budgetOverruns, parseCsv, comparePeriods } from "./metrics";
+import { budgetExcess, budgetOverruns, parseCsv, comparePeriods, compareBurnRates } from "./metrics";
 import { PeriodComparison } from "./PeriodComparison";
 import { BudgetOverruns } from "./BudgetOverruns";
+import { BudgetBurn } from "./BudgetBurn";
 import sample from "./sample.csv?raw";
 import sampleUrl from "./sample.csv?url";
 import "./style.css";
@@ -13,6 +14,7 @@ function Dashboard() {
   const [source, setSource] = useState("結帳服務 · 示範資料");
   const [days, setDays] = useState(14);
   const [target, setTarget] = useState(9990);
+  const [burnThreshold, setBurnThreshold] = useState(2);
   const [endDate, setEndDate] = useState<string | null>(null);
   const [error, setError] = useState("");
   const field = useId();
@@ -166,6 +168,8 @@ function Dashboard() {
         </details>
       </section>
       <BudgetOverruns analysis={budgetOverruns(report.series, target)} coverage={report.coverage} days={days} />
+      <BudgetBurn report={compareBurnRates(rows, target, burnThreshold, reportDate)}
+        multiplier={burnThreshold} setMultiplier={setBurnThreshold} />
       <PeriodComparison comparison={comparison} />
       <section className="imports">
         <div>

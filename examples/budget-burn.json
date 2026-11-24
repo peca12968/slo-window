@@ -1,0 +1,110 @@
+[
+  {
+    "scenario": "spike",
+    "targetBps": 9990,
+    "cutoff": "2026-05-10",
+    "multiplier": 2,
+    "short": {
+      "days": 2,
+      "start": "2026-05-09",
+      "end": "2026-05-10",
+      "coverage": 2,
+      "requests": 35300,
+      "errors": 82,
+      "ratio": 2.322946175637394,
+      "state": "at_or_above"
+    },
+    "long": {
+      "days": 7,
+      "start": "2026-05-04",
+      "end": "2026-05-10",
+      "coverage": 7,
+      "requests": 107500,
+      "errors": 115,
+      "ratio": 1.069767441860465,
+      "state": "below"
+    },
+    "status": "short_only"
+  },
+  {
+    "scenario": "both",
+    "targetBps": 9995,
+    "cutoff": "2026-05-10",
+    "multiplier": 2,
+    "short": {
+      "days": 2,
+      "start": "2026-05-09",
+      "end": "2026-05-10",
+      "coverage": 2,
+      "requests": 35300,
+      "errors": 82,
+      "ratio": 4.645892351274788,
+      "state": "at_or_above"
+    },
+    "long": {
+      "days": 7,
+      "start": "2026-05-04",
+      "end": "2026-05-10",
+      "coverage": 7,
+      "requests": 107500,
+      "errors": 115,
+      "ratio": 2.13953488372093,
+      "state": "at_or_above"
+    },
+    "status": "both"
+  },
+  {
+    "scenario": "long",
+    "targetBps": 9995,
+    "cutoff": "2026-05-12",
+    "multiplier": 2,
+    "short": {
+      "days": 2,
+      "start": "2026-05-11",
+      "end": "2026-05-12",
+      "coverage": 2,
+      "requests": 30000,
+      "errors": 20,
+      "ratio": 1.3333333333333333,
+      "state": "below"
+    },
+    "long": {
+      "days": 7,
+      "start": "2026-05-06",
+      "end": "2026-05-12",
+      "coverage": 7,
+      "requests": 109100,
+      "errors": 123,
+      "ratio": 2.2548120989917506,
+      "state": "at_or_above"
+    },
+    "status": "long_only"
+  },
+  {
+    "scenario": "missing",
+    "targetBps": 9995,
+    "cutoff": "2026-05-17",
+    "multiplier": 2,
+    "short": {
+      "days": 2,
+      "start": "2026-05-16",
+      "end": "2026-05-17",
+      "coverage": 0,
+      "requests": 0,
+      "errors": 0,
+      "ratio": null,
+      "state": "missing"
+    },
+    "long": {
+      "days": 7,
+      "start": "2026-05-11",
+      "end": "2026-05-17",
+      "coverage": 4,
+      "requests": 60000,
+      "errors": 27,
+      "ratio": null,
+      "state": "missing"
+    },
+    "status": "unknown"
+  }
+]

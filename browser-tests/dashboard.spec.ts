@@ -47,7 +47,9 @@ test("compares overlapping and deduplicated log counts and preserves observation
   await expect(page.getByText("資料不足，結論待確認 · 資料涵蓋 3/14 天")).toBeVisible();
   await expect(page.getByText("共 5 筆請求")).toBeVisible();
   await page.getByText("查看逐日數值").click();
-  await expect(page.getByRole("row").filter({ hasText: "2026-05-03" })).toContainText("缺資料");
+  await expect(page.getByRole("row").filter({
+    has: page.getByRole("cell", { name: "2026-05-03", exact: true }),
+  })).toContainText("缺資料");
 });
 
 test("compares complete periods then identifies a missing day on mobile", async ({page}) => {
@@ -122,5 +124,27 @@ test("ranks budget overruns and splits what looks continuous when a CSV observat
   await expect(overruns.getByRole("listitem").nth(1)).toContainText("後方 缺資料");
   await page.getByLabel("截止日（UTC）").fill("2026-05-10");
   await expect(overruns.getByRole("listitem").nth(0)).toContainText("後方 觀測區間邊界");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("compares the short and long burn at the same cutoff on mobile", async ({page}) => {
+  await page.setViewportSize({width: 360, height: 850});
+  await page.goto("/");
+  const cutoff = page.getByLabel("截止日（UTC）");
+  const burn = page.getByRole("region", {name: "錯誤預算消耗比較"});
+  const status = burn.getByRole("status");
+  await cutoff.fill("2026-05-10");
+  await expect(status).toHaveText("只有短期達到門檻");
+  await expect(burn.getByRole("row").filter({hasText: "2 天"})).toContainText("2.32 倍");
+  await page.getByLabel("可用率目標").selectOption("9995");
+  await expect(status).toHaveText("兩個區間都達到門檻");
+  await burn.getByLabel("消耗門檻").selectOption("4");
+  await expect(status).toHaveText("只有短期達到門檻");
+  await burn.getByLabel("消耗門檻").selectOption("2");
+  await cutoff.fill("2026-05-12");
+  await expect(status).toHaveText("只有長期達到門檻");
+  await cutoff.fill("2026-05-17");
+  await expect(status).toHaveText("資料不足，暫無雙區間判定");
+  await expect(burn.getByRole("row").filter({hasText: "2 天"})).toContainText("缺少觀測資料");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

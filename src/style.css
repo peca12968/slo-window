@@ -222,6 +222,13 @@ th:first-child {
   margin-top: 14px;
   overflow-wrap: anywhere;
 }
+.burn-control {
+  margin-top: 12px;
+}
+.budget-burn th,
+.budget-burn td {
+  overflow-wrap: anywhere;
+}
 .imports p {
   margin-bottom: 0;
 }

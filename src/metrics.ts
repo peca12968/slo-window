@@ -1,6 +1,8 @@
 export type Sample = { date: string; requests: number; errors: number };
 type WindowDay = { date: string; sample?: Sample };
 type Boundary = "window_edge" | "missing" | "zero_traffic" | "within_allowance";
+type BurnState = "missing" | "zero_traffic" | "at_or_above" | "below";
+type BurnStatus = "unknown" | "both" | "short_only" | "long_only" | "neither";
 type BudgetPeriod = {
   start: string;
   end: string;
@@ -160,4 +162,29 @@ export function summarize(rows: Sample[], days: number, targetBps: number, endDa
     targetBps,
     windowEnd(rows, endDate),
   );
+}
+
+export function compareBurnRates(
+  rows: Sample[], targetBps: number, multiplier: number, endDate?: string,
+) {
+  if (!Number.isInteger(targetBps) || targetBps < 0 || targetBps >= Number(scale) ||
+      !Number.isSafeInteger(multiplier) || multiplier < 1)
+    throw Error("需要有效的可用率目標與消耗倍數");
+  const end = windowEnd(rows, endDate);
+  const byDate = new Map(rows.map((row) => [row.date, row]));
+  const window = (days: number) => {
+    const { series, requests, errors, coverage } = summarizeWindow(byDate, days, targetBps, end);
+    const allowance = budgetAllowance(requests, targetBps);
+    const spent = BigInt(errors) * scale;
+    const state: BurnState = coverage < days ? "missing" : requests === 0 ? "zero_traffic"
+      : spent >= allowance * BigInt(multiplier) ? "at_or_above" : "below";
+    return { days, start: series[0].date, end: series[days - 1].date, coverage, requests, errors,
+      ratio: coverage === days && allowance ? Number(spent) / Number(allowance) : null, state };
+  };
+  const short = window(2);
+  const long = window(7);
+  const status: BurnStatus = short.ratio === null || long.ratio === null ? "unknown"
+    : short.state === "at_or_above" ? (long.state === "at_or_above" ? "both" : "short_only")
+    : long.state === "at_or_above" ? "long_only" : "neither";
+  return { short, long, status };
 }
