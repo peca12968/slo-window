@@ -60,7 +60,7 @@ python replay.py examples/tenant-burst.csv --workers 1 --queue 10 --compare-fair
 
 每個工作者配置會依序輸出 FIFO 與加權派工報告。`tenants` 將完成、逾時、佇列額滿、已派估計成本及實際忙碌時間依租戶列出。P95 只對已服務的請求計算，該租戶沒有完成請求時為 `null`。同一個 `--compare-fair` 也適用於 `--staffing` 動態增減人力。
 
-測試以 400 組動態人力與期限紀錄逐毫秒模擬，參考派工器逐輪加額度，核對每筆狀態、起訖時間與忙碌容量。另用同時等候的 80 筆工作，在三個租戶間與固定版本的 TypeScript Fair Dispatch 逐筆核對派工順序。[派工測試](test_fair.py) · [跨語言核對](dispatch_check.py) · [Fair Dispatch 固定版本](https://github.com/peca12968/fair-dispatch/tree/301141a6e7351a5c7f6b2bb80dc10b1a3c6d0939)
+測試以 400 組動態人力與期限紀錄逐毫秒模擬，參考派工器逐輪加額度，核對每筆狀態、起訖時間與忙碌容量。另用同時等候的 80 筆工作，在三個租戶間與固定版本的 TypeScript Fair Dispatch 逐筆核對派工順序。[派工測試](test_fair.py) · [跨語言核對](dispatch_check.py) · [Fair Dispatch 固定版本](https://github.com/peca12968/capacity-replay/tree/301141a6e7351a5c7f6b2bb80dc10b1a3c6d0939)
 
 ## 帶入自己的請求紀錄
 
@@ -86,3 +86,5 @@ CSV 需要四個欄位，單位皆為整數毫秒。
 動態配置另以 400 組隨機班表與流量比對逐毫秒模型，逐筆核對派工與離開時間，再核對目標容量、收尾時間和隊伍峰值。邊界案例包含從零恢復服務、完成與縮編同時發生，以及到期時剛好增加名額。
 
 本專案使用 AI 輔助開發。範例請求皆為合成資料。
+
+[同庫模組與整合測試](modules/README.md)

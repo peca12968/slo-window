@@ -1,0 +1,17 @@
+{
+  "quanta": {"render": 4, "thumbnail": 2},
+  "events": [
+    {"enqueue": {"tenant": "render", "id": "film-01", "cost": 4}},
+    {"enqueue": {"tenant": "render", "id": "film-02", "cost": 4}},
+    {"enqueue": {"tenant": "render", "id": "film-03", "cost": 4}},
+    {"enqueue": {"tenant": "render", "id": "film-04", "cost": 4}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-01", "cost": 1}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-02", "cost": 1}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-03", "cost": 1}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-04", "cost": 1}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-05", "cost": 1}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-06", "cost": 1}},
+    {"enqueue": {"tenant": "thumbnail", "id": "thumb-07", "cost": 1}},
+    {"dispatch": 9}
+  ]
+}
