@@ -8,7 +8,6 @@
 
 ```sh
 dotnet build src -c Release
-git clone https://github.com/peca12968/slo-window.git ../bucket-verdict
 python latency_demo.py ../bucket-verdict/verdict.py
 ```
 
