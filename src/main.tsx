@@ -1,22 +1,27 @@
-import React, { useId, useState } from "react";
+import React, { useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { budgetExcess, budgetOverruns, parseCsv, comparePeriods, compareBurnRates } from "./metrics";
+import { attributeBudget, budgetExcess, budgetOverruns, parseDataset, comparePeriods, compareBurnRates } from "./metrics";
 import { PeriodComparison } from "./PeriodComparison";
 import { BudgetOverruns } from "./BudgetOverruns";
 import { BudgetBurn } from "./BudgetBurn";
+import { RouteBudget } from "./RouteBudget";
 import sample from "./sample.csv?raw";
 import sampleUrl from "./sample.csv?url";
+import routeSample from "./sample-routes.csv?raw";
+import routeSampleUrl from "./sample-routes.csv?url";
 import "./style.css";
 
 const format = new Intl.NumberFormat("zh-TW");
 function Dashboard() {
-  const [rows, setRows] = useState(() => parseCsv(sample));
+  const [dataset, setDataset] = useState(() => parseDataset(sample));
+  const { rows, routes } = dataset;
   const [source, setSource] = useState("結帳服務 · 示範資料");
   const [days, setDays] = useState(14);
   const [target, setTarget] = useState(9990);
   const [burnThreshold, setBurnThreshold] = useState(2);
   const [endDate, setEndDate] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const request = useRef(0);
   const field = useId();
   const reportDate = endDate ?? rows.at(-1)!.date;
   const comparison = comparePeriods(rows, days, target, reportDate);
@@ -35,6 +40,12 @@ function Dashboard() {
   const status = incomplete
     ? "資料不足，結論待確認"
     : report.within === null ? "無請求" : report.within ? "已達標" : "未達標";
+
+  function showDataset(text: string, name: string) {
+    setDataset(parseDataset(text));
+    setSource(name);
+    setError("");
+  }
   return (
     <main>
       <header>
@@ -170,6 +181,7 @@ function Dashboard() {
       <BudgetOverruns analysis={budgetOverruns(report.series, target)} coverage={report.coverage} days={days} />
       <BudgetBurn report={compareBurnRates(rows, target, burnThreshold, reportDate)}
         multiplier={burnThreshold} setMultiplier={setBurnThreshold} />
+      {routes && <RouteBudget analysis={attributeBudget(routes, report.series, target)} coverage={report.coverage} days={days} />}
       <PeriodComparison comparison={comparison} />
       <section className="imports">
         <div>
@@ -180,6 +192,13 @@ function Dashboard() {
               下載範例
             </a>
           </p>
+          <div className="route-import">
+            <button type="button" onClick={() => {
+              request.current++;
+              showDataset(routeSample, "結帳服務 · 路由示範");
+            }}>載入路由示範</button>
+            <a href={routeSampleUrl} download="sample-routes.csv">下載路由 CSV</a>
+          </div>
         </div>
         <div>
           <label htmlFor={field}>選擇 CSV 檔案</label>
@@ -191,14 +210,13 @@ function Dashboard() {
               const file = e.target.files?.[0];
               e.target.value = "";
               if (!file) return;
+              const latest = ++request.current;
               try {
                 if (file.size > 500_000) throw Error("檔案上限為 500 KB");
-                const next = parseCsv(await file.text());
-                setRows(next);
-                setSource(file.name);
-                setError("");
+                const text = await file.text();
+                if (latest === request.current) showDataset(text, file.name);
               } catch (err) {
-                setError(err instanceof Error ? err.message : "檔案讀取失敗");
+                if (latest === request.current) setError(err instanceof Error ? err.message : "檔案讀取失敗");
               }
             }}
           />

@@ -148,3 +148,38 @@ test("compares the short and long burn at the same cutoff on mobile", async ({pa
   await expect(burn.getByRole("row").filter({hasText: "2 天"})).toContainText("缺少觀測資料");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+test("attributes net error budget to routes and preserves the report through an invalid import", async ({page}) => {
+  await page.setViewportSize({width: 360, height: 850});
+  await page.goto("/");
+  const route = page.getByRole("region", {name: "路由錯誤預算"});
+  const totals = page.getByRole("region", {name: "區間指標"});
+  await expect(route).toHaveCount(0);
+  await page.getByLabel("觀測區間").selectOption("7");
+  await page.getByRole("button", {name: "載入路由示範"}).click();
+  await expect(totals).toContainText("共 28,000 筆請求");
+  await expect(totals).toContainText("99.896%");
+  await expect(route.getByRole("status")).toHaveText("超額 17.5 筆 · 餘額 16.5 筆 · 淨超額 1 筆");
+  await expect(route.getByRole("row").filter({hasText: "POST /checkout"})).toContainText("24／6,500");
+  await page.getByLabel("可用率目標").selectOption("9995");
+  await expect(route.getByRole("status")).toContainText("淨超額 15 筆");
+  await page.getByLabel("截止日（UTC）").fill("2026-05-08");
+  await expect(route).toContainText("觀測 6/7 天");
+  await expect(route.getByRole("row").filter({hasText: "POST /checkout"})).toContainText("20／5,500");
+
+  const upload = page.getByLabel("選擇 CSV 檔案");
+  await upload.setInputFiles({name: "duplicate.csv", mimeType: "text/csv", buffer: Buffer.from(
+    "date,route,requests,errors\n2026-05-08,GET /catalog,100,2\n2026-05-08,GET /catalog,0,0")});
+  await expect(page.getByRole("alert")).toContainText("同日重複");
+  await expect(route).toContainText("觀測 6/7 天");
+  await upload.setInputFiles({name: "route.csv", mimeType: "text/csv", buffer: Buffer.from(
+    "date,route,requests,errors\n2026-05-08,GET /catalog,100,2\n2026-05-08,GET /idle,0,0")});
+  await expect(route.getByRole("row").filter({hasText: "GET /idle"})).toContainText("零請求");
+  await expect(totals).toContainText("共 100 筆請求");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+  await upload.setInputFiles({name: "total.csv", mimeType: "text/csv", buffer: Buffer.from("date,requests,errors\n2026-05-08,100,2")});
+  await expect(route).toHaveCount(0);
+  await expect(totals).toContainText("共 100 筆請求");
+});

@@ -1,0 +1,98 @@
+[
+  {
+    "scenario": "base",
+    "targetBps": 9990,
+    "days": 7,
+    "cutoff": "2026-05-07",
+    "coverage": 7,
+    "requests": 28000,
+    "errors": 29,
+    "routes": [
+      {
+        "route": "POST /checkout",
+        "requests": 6500,
+        "errors": 24,
+        "excessScaled": "175000"
+      },
+      {
+        "route": "GET /staff",
+        "requests": 7500,
+        "errors": 0,
+        "excessScaled": "-75000"
+      },
+      {
+        "route": "GET /catalog",
+        "requests": 14000,
+        "errors": 5,
+        "excessScaled": "-90000"
+      }
+    ],
+    "excessScaled": "175000",
+    "unusedScaled": "165000",
+    "netScaled": "10000"
+  },
+  {
+    "scenario": "strict",
+    "targetBps": 9995,
+    "days": 7,
+    "cutoff": "2026-05-07",
+    "coverage": 7,
+    "requests": 28000,
+    "errors": 29,
+    "routes": [
+      {
+        "route": "POST /checkout",
+        "requests": 6500,
+        "errors": 24,
+        "excessScaled": "207500"
+      },
+      {
+        "route": "GET /catalog",
+        "requests": 14000,
+        "errors": 5,
+        "excessScaled": "-20000"
+      },
+      {
+        "route": "GET /staff",
+        "requests": 7500,
+        "errors": 0,
+        "excessScaled": "-37500"
+      }
+    ],
+    "excessScaled": "207500",
+    "unusedScaled": "57500",
+    "netScaled": "150000"
+  },
+  {
+    "scenario": "gap",
+    "targetBps": 9990,
+    "days": 7,
+    "cutoff": "2026-05-08",
+    "coverage": 6,
+    "requests": 24000,
+    "errors": 25,
+    "routes": [
+      {
+        "route": "POST /checkout",
+        "requests": 5500,
+        "errors": 20,
+        "excessScaled": "145000"
+      },
+      {
+        "route": "GET /staff",
+        "requests": 6500,
+        "errors": 0,
+        "excessScaled": "-65000"
+      },
+      {
+        "route": "GET /catalog",
+        "requests": 12000,
+        "errors": 5,
+        "excessScaled": "-70000"
+      }
+    ],
+    "excessScaled": "145000",
+    "unusedScaled": "135000",
+    "netScaled": "10000"
+  }
+]

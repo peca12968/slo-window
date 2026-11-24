@@ -1,4 +1,5 @@
 export type Sample = { date: string; requests: number; errors: number };
+type RouteSample = Sample & { route: string };
 type WindowDay = { date: string; sample?: Sample };
 type Boundary = "window_edge" | "missing" | "zero_traffic" | "within_allowance";
 type BurnState = "missing" | "zero_traffic" | "at_or_above" | "below";
@@ -62,24 +63,31 @@ function utcDay(value: string) {
     : NaN;
 }
 
-export function parseCsv(text: string): Sample[] {
+function readCsv(text: string, allowRoutes: boolean) {
   const [header, ...lines] = text
     .replace(/^\uFEFF/, "")
     .trim()
     .split(/\r?\n/);
-  if (header !== "date,requests,errors")
-    throw Error("第一列必須為 date,requests,errors");
+  const grouped = allowRoutes && header === "date,route,requests,errors";
+  if (header !== "date,requests,errors" && !grouped)
+    throw Error(allowRoutes ? "第一列必須為 date,requests,errors 或 date,route,requests,errors" : "第一列必須為 date,requests,errors");
   if (!lines.length || lines.length > 3660)
-    throw Error("請提供 1 至 3660 天的資料");
+    throw Error(grouped ? "請提供 1 至 3660 筆路由統計" : "請提供 1 至 3660 天的資料");
   const seen = new Set<string>();
-  return lines
+  const daily = new Map<string, Sample>();
+  const entries = lines
     .map((line, index) => {
-      const [date, requests, errors, ...extra] = line
+      const [date, ...fields] = line
         .split(",")
         .map((value) => value.trim());
-      if (!Number.isFinite(utcDay(date)) || seen.has(date))
+      const route = grouped ? fields.shift() ?? "" : "";
+      const [requests, errors, ...extra] = fields;
+      if (!Number.isFinite(utcDay(date)) || (!grouped && seen.has(date)))
         throw Error(`第 ${index + 2} 列的日期無效或重複`);
-      // The per-day ceiling keeps the sum of all accepted rows within JS safe integers.
+      const key = grouped ? `${date}\n${route}` : date;
+      if (grouped && (!route || route.length > 80 || /[\u0000-\u001f\u007f"]/.test(route) || seen.has(key)))
+        throw Error(`第 ${index + 2} 列的路由無效或同日重複`);
+      // The per-row ceiling and row limit keep all accepted totals within safe integers.
       const count = (value: string) => /^\d{1,12}$/.test(value);
       if (
         extra.length ||
@@ -88,10 +96,45 @@ export function parseCsv(text: string): Sample[] {
         +errors > +requests
       )
         throw Error(`第 ${index + 2} 列的請求數或失敗數無效`);
-      seen.add(date);
-      return { date, requests: +requests, errors: +errors };
-    })
-    .sort((a, b) => a.date.localeCompare(b.date));
+      seen.add(key);
+      const sample = daily.get(date) ?? { date, requests: 0, errors: 0 };
+      sample.requests += +requests;
+      sample.errors += +errors;
+      daily.set(date, sample);
+      return { date, route, requests: +requests, errors: +errors };
+    });
+  return { rows: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)), routes: grouped ? entries : null };
+}
+
+export function parseCsv(text: string): Sample[] {
+  return readCsv(text, false).rows;
+}
+
+export function parseDataset(text: string) {
+  return readCsv(text, true);
+}
+
+export function attributeBudget(rows: RouteSample[], series: WindowDay[], targetBps: number) {
+  const dates = new Set(series.map(day => day.date));
+  const totals = new Map<string, { route: string; requests: number; errors: number }>();
+  for (const row of rows) {
+    if (!dates.has(row.date)) continue;
+    const route = totals.get(row.route) ?? { route: row.route, requests: 0, errors: 0 };
+    route.requests += row.requests;
+    route.errors += row.errors;
+    totals.set(row.route, route);
+  }
+  const routes = [...totals.values()].map(route => ({
+    ...route, excessScaled: budgetExcess(route.requests, route.errors, targetBps),
+  })).sort((a, b) => a.excessScaled === b.excessScaled ? a.route.localeCompare(b.route, "en")
+    : a.excessScaled > b.excessScaled ? -1 : 1);
+  let excessScaled = 0n;
+  let unusedScaled = 0n;
+  for (const route of routes) {
+    if (route.excessScaled > 0n) excessScaled += route.excessScaled;
+    else unusedScaled -= route.excessScaled;
+  }
+  return { routes, excessScaled, unusedScaled, netScaled: excessScaled - unusedScaled };
 }
 
 function summarizeWindow(
